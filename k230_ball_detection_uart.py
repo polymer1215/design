@@ -301,16 +301,15 @@ def init_ball_uart():
     )
 
 
-def send_ball_center(uart, center_x, center_y):
-    """Send one ASCII coordinate frame and discard the previous MCU echo."""
+def send_ball_x(uart, center_x):
+    """Send one ASCII X-coordinate frame and discard the previous MCU echo."""
     uart.read(128)
 
-    if center_x >= 0 and center_y >= 0:
+    if center_x >= 0:
         x = int(center_x + 0.5)
-        y = int(center_y + 0.5)
-        frame = "BALL,{:03d},{:03d}\r\n".format(x, y)
+        frame = "BALL,{:03d}\r\n".format(x)
     elif SEND_NO_TARGET_FRAME:
-        frame = "BALL,-1,-1\r\n"
+        frame = "BALL,-1\r\n"
     else:
         return
 
@@ -334,7 +333,7 @@ def detection():
 
     try:
         uart = init_ball_uart()
-        send_ball_center(uart, -1, -1)
+        send_ball_x(uart, -1)
 
         # ----------------------------------------------------
         # 读取部署配置
@@ -716,7 +715,6 @@ def detection():
 
                 max_area = 0
                 ax = -1
-                ay = -1
 
                 if det_boxes:
                     for det_box in det_boxes:
@@ -828,28 +826,20 @@ def detection():
                         if area > max_area:
                             max_area = area
                             ax = (x1 + x2) / 2.0
-                            ay = (y1 + y2) / 2.0
 
                 # ------------------------------------------------
                 # 绘制最大目标中心连线
                 # ------------------------------------------------
 
-                send_ball_center(uart, ax, ay)
+                send_ball_x(uart, ax)
 
-                if ax >= 0 and ay >= 0:
+                if ax >= 0:
                     lcd_ax = int(ax * scale_x)
-                    lcd_ay = int(ay * scale_y)
 
                     lcd_ax = clamp(
                         lcd_ax,
                         0,
                         DISPLAY_WIDTH - 1
-                    )
-
-                    lcd_ay = clamp(
-                        lcd_ay,
-                        0,
-                        DISPLAY_HEIGHT - 1
                     )
 
                     osd_img.draw_string_advanced(
@@ -866,17 +856,6 @@ def detection():
                         lcd_ax,
                         center_y,
                         center_x,
-                        center_y,
-                        color=(0, 255, 0),
-                        thickness=1
-                    )
-
-                    # 竖直线：
-                    # 目标中心 -> (目标中心X, 屏幕中心Y)
-                    osd_img.draw_line(
-                        lcd_ax,
-                        lcd_ay,
-                        lcd_ax,
                         center_y,
                         color=(0, 255, 0),
                         thickness=1

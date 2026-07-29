@@ -123,13 +123,10 @@ void formatCoordinateLine(
 void showBallPosition(const K230Protocol::BallPosition &position)
 {
     char xLine[6];
-    char yLine[6];
     char sequenceLine[10] = "RX:";
 
     formatCoordinateLine(
         xLine, 'X', position.detected, position.x);
-    formatCoordinateLine(
-        yLine, 'Y', position.detected, position.y);
     formatUnsigned(&sequenceLine[3], position.sequence, 6U);
     sequenceLine[9] = '\0';
 
@@ -142,7 +139,7 @@ void showBallPosition(const K230Protocol::BallPosition &position)
     OLED_ShowString(
         0, 16, reinterpret_cast<const u8 *>(xLine), 16, 1);
     OLED_ShowString(
-        0, 32, reinterpret_cast<const u8 *>(yLine), 16, 1);
+        0, 32, reinterpret_cast<const u8 *>("X AXIS ONLY"), 16, 1);
     OLED_ShowString(
         0, 48, reinterpret_cast<const u8 *>(sequenceLine), 16, 1);
     OLED_Refresh();
@@ -168,7 +165,7 @@ void showK230Status(const K230Uart::Statistics &statistics)
     OLED_ShowString(
         0, 32, reinterpret_cast<const u8 *>(droppedLine), 16, 1);
     OLED_ShowString(
-        0, 48, reinterpret_cast<const u8 *>("NEED BALL,x,y"), 16, 1);
+        0, 48, reinterpret_cast<const u8 *>("NEED BALL,x"), 16, 1);
     OLED_Refresh();
 }
 

@@ -2,7 +2,7 @@
 
 namespace {
 
-constexpr std::uint8_t kLineBufferSize = 24U;
+constexpr std::uint8_t kLineBufferSize = 16U;
 char g_lineBuffer[kLineBufferSize] = {};
 std::uint8_t g_lineLength = 0U;
 bool g_discardUntilNewline = false;
@@ -60,22 +60,18 @@ bool parseBallFrame(
 
     std::uint8_t index = sizeof(kPrefix) - 1U;
     std::int16_t x;
-    std::int16_t y;
-    if (!parseInteger(line, index, ',', x) ||
-        !parseInteger(line, index, '\0', y)) {
+    if (!parseInteger(line, index, '\0', x)) {
         return false;
     }
 
-    const bool noTarget = x == -1 && y == -1;
-    const bool validTarget =
-        x >= 0 && x <= 639 && y >= 0 && y <= 479;
+    const bool noTarget = x == -1;
+    const bool validTarget = x >= 0 && x <= 639;
     if (!noTarget && !validTarget) {
         return false;
     }
 
     position.detected = validTarget;
     position.x = x;
-    position.y = y;
     position.sequence = ++g_frameSequence;
     return true;
 }
