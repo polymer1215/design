@@ -160,3 +160,18 @@ Run `k230_uart_echo_test.py` in CanMV IDE. It sends one test line every 500 ms
 and prints `PASS` only when the MSPM0 returns exactly the same bytes. The
 script uses `machine.UART` directly and does not depend on `YbUart`,
 `YbProtocol`, or the reference project's K230 Python code.
+
+### Ball coordinate sender
+
+`k230_ball_detection_uart.py` is based on the steel-ball detector in
+`D:\designDocs\test.py`. It selects the largest valid detection and sends its
+center in the 640x480 AI-frame coordinate system:
+
+```text
+BALL,320,240\r\n
+```
+
+The valid coordinate fields are zero-padded to three digits. When no ball is
+detected it sends `BALL,-1,-1\r\n`; set `SEND_NO_TARGET_FRAME = False` to
+suppress no-target frames. The script drains the previous MSPM0 echo before
+each transmission so the K230 receive FIFO does not accumulate echoed data.
