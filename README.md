@@ -143,9 +143,12 @@ The K230 link is a bidirectional 115200-8-N-1 UART. Incoming bytes are placed
 in a 512-byte interrupt-driven ring buffer. The current application echoes
 the bytes unchanged and does not parse any Yahboom packet format.
 
-The OLED shows the latest 19 received bytes in hexadecimal. The first row is
-prefixed with `RX:`. New K230 data keeps this raw-data page visible; if no byte
-is received for about two seconds, the display returns to the PID page.
+The MSPM0 stream parser accepts `BALL,x,y\r\n`, validates coordinates against
+the 640x480 AI frame, and shows `K230 BALL`, `X`, `Y`, and the decoded frame
+sequence on the OLED. `BALL,-1,-1\r\n` displays `K230 NO BALL` with `X:---`
+and `Y:---`. Invalid, partial, and overlong lines do not update the displayed
+position. If no valid frame is received for about two seconds, the display
+returns to the PID page.
 
 | Signal | MSPM0G3507 | Yahboom K230 communication connector |
 | --- | --- | --- |

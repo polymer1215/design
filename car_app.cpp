@@ -1,6 +1,7 @@
 #include "car_app.hpp"
 
 #include "encoder.hpp"
+#include "k230_protocol.hpp"
 #include "k230_uart.hpp"
 #include "pid_dashboard.hpp"
 #include "speed_controller.hpp"
@@ -16,10 +17,13 @@ void serviceK230Link()
     constexpr std::size_t kMaximumBytesPerRun = 64U;
     std::size_t count = 0U;
     std::uint8_t data;
+    K230Protocol::BallPosition position;
 
     while (count < kMaximumBytesPerRun && K230Uart::read(data)) {
         K230Uart::write(data);
-        PidDashboard::pushK230Byte(data);
+        if (K230Protocol::consume(data, position)) {
+            PidDashboard::setBallPosition(position);
+        }
         ++count;
     }
 }
@@ -31,6 +35,7 @@ void init()
     TB6612::init();
     PidDashboard::init();
     K230Uart::init();
+    K230Protocol::reset();
 
     SpeedControl::init();
     SpeedControl::setTunings(

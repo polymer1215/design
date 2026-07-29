@@ -3,10 +3,12 @@
 
 #include <cstdint>
 
+#include "k230_protocol.hpp"
+
 namespace PidDashboard {
 
 void init();
-void pushK230Byte(std::uint8_t data);
+void setBallPosition(const K230Protocol::BallPosition &position);
 void update(std::uint32_t sampleSequence);
 
 }  // namespace PidDashboard
