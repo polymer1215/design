@@ -39,6 +39,15 @@ namespace K230Uart {
 
 void init()
 {
+    /*
+     * RX FIFO interrupts are transition-triggered. Stop both interrupt stages
+     * before resetting the software queue so a frame received during boot
+     * cannot leave a stale FIFO-threshold interrupt behind.
+     */
+    NVIC_DisableIRQ(UART_K230_INST_INT_IRQN);
+    DL_UART_Main_disableInterrupt(
+        UART_K230_INST, DL_UART_MAIN_INTERRUPT_RX);
+
     g_receiveHead = 0U;
     g_receiveTail = 0U;
     g_receivedBytes = 0U;
@@ -47,9 +56,20 @@ void init()
 
     DL_UART_Main_clearInterruptStatus(
         UART_K230_INST, DL_UART_MAIN_INTERRUPT_RX);
+    NVIC_ClearPendingIRQ(UART_K230_INST_INT_IRQN);
+
+    /*
+     * Preserve bytes that arrived after SYSCFG enabled UART2 but before this
+     * function ran. Draining below the threshold also rearms the next
+     * transition-triggered RX interrupt.
+     */
+    std::uint8_t data;
+    while (DL_UART_Main_receiveDataCheck(UART_K230_INST, &data)) {
+        storeReceivedByte(data);
+    }
+
     DL_UART_Main_enableInterrupt(
         UART_K230_INST, DL_UART_MAIN_INTERRUPT_RX);
-    NVIC_ClearPendingIRQ(UART_K230_INST_INT_IRQN);
     NVIC_EnableIRQ(UART_K230_INST_INT_IRQN);
 }
 

@@ -32,10 +32,16 @@ void serviceK230Link()
 
 void init()
 {
+    /*
+     * Arm K230 reception before OLED initialization. OLED_Init() deliberately
+     * waits for the panel to power up, during which the K230 may already send
+     * its startup frame.
+     */
+    K230Protocol::reset();
+    K230Uart::init();
+
     TB6612::init();
     PidDashboard::init();
-    K230Uart::init();
-    K230Protocol::reset();
 
     SpeedControl::init();
     SpeedControl::setTunings(

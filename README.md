@@ -186,3 +186,9 @@ suppress no-target frames. The script drains the previous MSPM0 echo before
 each transmission so the K230 receive FIFO does not accumulate echoed data.
 It also sends one no-target frame immediately after UART initialization, before
 model loading, to verify the complete K230-to-MSPM0-to-OLED path.
+
+The MSPM0 arms UART2 before the OLED power-up delay and drains any bytes already
+present in the hardware RX FIFO before enabling its transition-triggered
+interrupt. This makes reception independent of the K230/MSPM0 power-up order.
+The K230 UART uses an explicit zero-millisecond read timeout, so discarding the
+previous echo never delays the next coordinate transmission.

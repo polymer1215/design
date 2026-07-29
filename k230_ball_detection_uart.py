@@ -296,7 +296,8 @@ def init_ball_uart():
         baudrate=UART_BAUD_RATE,
         bits=UART.EIGHTBITS,
         parity=UART.PARITY_NONE,
-        stop=UART.STOPBITS_ONE
+        stop=UART.STOPBITS_ONE,
+        timeout=0
     )
 
 
