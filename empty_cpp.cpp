@@ -38,6 +38,12 @@
 
 namespace {
 
+constexpr float kSpeedTestStartRpm = 50.0F;
+constexpr float kSpeedTestStepRpm = 50.0F;
+constexpr float kSpeedTestMaximumRpm = 500.0F;
+constexpr std::uint32_t kSpeedTestStepTicks =
+    2U * Encoder::kSampleRateHz;
+
 void formatSigned(char *output, std::int32_t value, std::uint8_t digits)
 {
     std::uint32_t magnitude;
@@ -129,13 +135,24 @@ int main(void)
         SpeedControl::kDefaultKi,
         SpeedControl::kDefaultKd);
     SpeedControl::setTargetRpm(
-        SpeedControl::kDefaultTargetRpm,
-        SpeedControl::kDefaultTargetRpm);
+        kSpeedTestStartRpm,
+        kSpeedTestStartRpm);
     Encoder::init();
 
+    float speedTestTargetRpm = kSpeedTestStartRpm;
+    std::uint32_t nextSpeedStep = kSpeedTestStepTicks;
     std::uint32_t displayedSequence = 0U;
     while (1) {
         const Encoder::Sample sample = Encoder::latest();
+
+        while (speedTestTargetRpm < kSpeedTestMaximumRpm &&
+            sample.sequence >= nextSpeedStep) {
+            speedTestTargetRpm += kSpeedTestStepRpm;
+            SpeedControl::setTargetRpm(
+                speedTestTargetRpm, speedTestTargetRpm);
+            nextSpeedStep += kSpeedTestStepTicks;
+        }
+
         if (OLED_IsConnected() &&
             (sample.sequence - displayedSequence) >= 20U) {
             displayedSequence = sample.sequence;

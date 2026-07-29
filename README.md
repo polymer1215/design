@@ -120,3 +120,7 @@ The encoder sampling ISR runs two independent wheel-speed PID controllers at
 Use `SpeedControl::setTargetRpm(left, right)` to change the wheel targets and
 `SpeedControl::setTunings(kp, ki, kd)` to tune both controllers. The OLED
 shows target RPM (`T`), measured RPM (`M`) and the signed PWM command.
+
+The current automatic speed test starts both wheel targets at 50 RPM and
+raises them by 50 RPM every two seconds. The ramp stops increasing when it
+reaches 500 RPM and then holds that target.
