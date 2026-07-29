@@ -72,8 +72,8 @@ or BO1/BO2 wires.
 ## OLED Display
 
 The project includes the SSD1306 128x64 framebuffer driver and fonts ported
-from `MSPM0_K230_OLED_Echo`. The display uses 7-bit I2C address `0x3C` at
-500 kHz.
+from `MSPM0_K230_OLED_Echo`. The display uses 7-bit I2C address `0x3C` on a
+100 kHz bus shared with the grayscale sensor.
 
 | OLED signal | MSPM0G3507 pin | Assignment |
 | --- | --- | --- |
@@ -192,3 +192,30 @@ present in the hardware RX FIFO before enabling its transition-triggered
 interrupt. This makes reception independent of the K230/MSPM0 power-up order.
 The K230 UART uses an explicit zero-millisecond read timeout, so discarding the
 previous echo never delays the next coordinate transmission.
+
+## Ganwei Eight-channel Grayscale Sensor
+
+The grayscale sensor shares I2C0 with the OLED. With both AD0 and AD1 address
+jumpers open, its 7-bit address is `0x4C`. The driver retries the manual's
+`0xAA` ping until it receives `0x66`; it does not block vehicle startup while
+the sensor is absent or still initializing. Once connected, it samples at
+20 Hz:
+
+- `0xDD`: one digital byte, bit 0 through bit 7 map to channels 1 through 8.
+- `0xB0`: eight analog bytes returned in channel 1 through channel 8 order.
+
+The OLED alternates every second between a grayscale page and the existing
+K230/PID pages. `GRAY WAIT A:4C` means the ping has not succeeded. `GRAY OK`
+shows the digital bit mask, sample count, all eight analog values and the
+accumulated I2C error count.
+
+| Sensor signal | Connection |
+| --- | --- |
+| VCC | Regulated 5 V |
+| GND | Common ground |
+| SCL/SDA | 5 V side of a bidirectional I2C level shifter |
+| Level-shifter 3.3 V side | PA1 SCL / PA0 SDA, shared with OLED |
+
+Keep the OLED and MSPM0 side pulled up to 3.3 V. Put the sensor's optional
+5 V pull-ups only on the level shifter's sensor side. Do not directly connect
+the OLED to a bus pulled up to 5 V.

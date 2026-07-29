@@ -1,6 +1,7 @@
 #include "car_app.hpp"
 
 #include "encoder.hpp"
+#include "gray_sensor.hpp"
 #include "k230_protocol.hpp"
 #include "k230_uart.hpp"
 #include "pid_dashboard.hpp"
@@ -42,6 +43,7 @@ void init()
 
     TB6612::init();
     PidDashboard::init();
+    GraySensor::init();
 
     SpeedControl::init();
     SpeedControl::setTunings(
@@ -58,6 +60,7 @@ void runOnce()
 
     const Encoder::Sample sample = Encoder::latest();
     SpeedTest::update(sample.sequence);
+    GraySensor::update(sample.sequence);
     PidDashboard::update(sample.sequence);
 }
 

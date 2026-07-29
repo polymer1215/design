@@ -1,6 +1,7 @@
 #include "pid_dashboard.hpp"
 
 #include "encoder.hpp"
+#include "gray_sensor.hpp"
 #include "k230_uart.hpp"
 #include "oled.h"
 #include "speed_controller.hpp"
@@ -171,6 +172,63 @@ void showK230Status(const K230Uart::Statistics &statistics)
     OLED_Refresh();
 }
 
+char hexDigit(std::uint8_t value)
+{
+    return static_cast<char>(
+        value < 10U ? '0' + value : 'A' + value - 10U);
+}
+
+void formatAnalogPair(char *line, std::uint8_t firstChannel,
+    std::uint8_t first, std::uint8_t second)
+{
+    line[0] = static_cast<char>('1' + firstChannel);
+    line[1] = ':';
+    formatUnsigned(&line[2], first, 3U);
+    line[5] = ' ';
+    line[6] = static_cast<char>('2' + firstChannel);
+    line[7] = ':';
+    formatUnsigned(&line[8], second, 3U);
+    line[11] = '\0';
+}
+
+void showGraySensor(const GraySensor::Sample &sample)
+{
+    char title[15] = "GRAY WAIT A:4C";
+    char digitalLine[15] = "D:00 N:000000";
+    char errorLine[11] = "ERR:000000";
+    char pairs[4][12] = {};
+
+    if (sample.connected) {
+        title[5] = 'O';
+        title[6] = 'K';
+        title[7] = ' ';
+        title[8] = ' ';
+    }
+    digitalLine[2] = hexDigit((sample.digital >> 4U) & 0x0FU);
+    digitalLine[3] = hexDigit(sample.digital & 0x0FU);
+    formatUnsigned(&digitalLine[7], sample.sequence, 6U);
+    formatUnsigned(&errorLine[4], sample.errors, 6U);
+
+    for (std::uint8_t pair = 0U; pair < 4U; ++pair) {
+        const std::uint8_t channel = pair * 2U;
+        formatAnalogPair(pairs[pair], channel,
+            sample.analog[channel], sample.analog[channel + 1U]);
+    }
+
+    OLED_Clear();
+    OLED_ShowString(
+        0, 0, reinterpret_cast<const u8 *>(title), 8, 1);
+    OLED_ShowString(
+        0, 8, reinterpret_cast<const u8 *>(digitalLine), 8, 1);
+    for (std::uint8_t pair = 0U; pair < 4U; ++pair) {
+        OLED_ShowString(0, static_cast<u8>(16U + pair * 8U),
+            reinterpret_cast<const u8 *>(pairs[pair]), 8, 1);
+    }
+    OLED_ShowString(
+        0, 48, reinterpret_cast<const u8 *>(errorLine), 8, 1);
+    OLED_Refresh();
+}
+
 }  // namespace
 
 namespace PidDashboard {
@@ -200,9 +258,13 @@ void update(std::uint32_t sampleSequence)
     }
 
     g_displayedSequence = sampleSequence;
-    if (g_hasBallFrame) {
+    const std::uint32_t seconds =
+        sampleSequence / Encoder::kSampleRateHz;
+    if ((seconds & 1U) == 0U) {
+        showGraySensor(GraySensor::latest());
+    } else if (g_hasBallFrame) {
         showBallPosition(g_ballPosition);
-    } else if (((sampleSequence / Encoder::kSampleRateHz) & 1U) == 0U) {
+    } else if (((seconds / 2U) & 1U) == 0U) {
         showK230Status(K230Uart::statistics());
     } else {
         show(SpeedControl::latest());
