@@ -9,6 +9,23 @@
 
 namespace CarApp {
 
+namespace {
+
+void serviceK230Link()
+{
+    constexpr std::size_t kMaximumBytesPerRun = 64U;
+    std::size_t count = 0U;
+    std::uint8_t data;
+
+    while (count < kMaximumBytesPerRun && K230Uart::read(data)) {
+        K230Uart::write(data);
+        PidDashboard::pushK230Byte(data);
+        ++count;
+    }
+}
+
+}  // namespace
+
 void init()
 {
     TB6612::init();
@@ -26,7 +43,7 @@ void init()
 
 void runOnce()
 {
-    K230Uart::serviceEcho();
+    serviceK230Link();
 
     const Encoder::Sample sample = Encoder::latest();
     SpeedTest::update(sample.sequence);
