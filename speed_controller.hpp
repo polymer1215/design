@@ -5,11 +5,11 @@
 
 namespace SpeedControl {
 
-constexpr float kDefaultKp = 4.0F;
-constexpr float kDefaultKi = 6.0F;
+constexpr float kDefaultKp = 30.0F;
+constexpr float kDefaultKi = 20.0F;
 constexpr float kDefaultKd = 0.0F;
 constexpr float kDefaultTargetRpm = 100.0F;
-constexpr std::int16_t kOutputLimit = 700;
+constexpr std::int16_t kOutputLimit = 800;
 
 /*
  * Runtime PID switch. Set to false (0) to stop both motor outputs while

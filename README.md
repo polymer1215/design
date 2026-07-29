@@ -110,11 +110,11 @@ in software so that forward motion produces positive feedback on both wheels.
 The encoder sampling ISR runs two independent wheel-speed PID controllers at
 100 Hz. The initial test settings are:
 
-- Target: 100 RPM for each wheel
-- Kp: 4.0
-- Ki: 6.0
+- Initial target: 50 RPM for each wheel
+- Kp: 30.0
+- Ki: 20.0
 - Kd: 0.0
-- PWM command limit: +/-700 of 1000
+- PWM command limit: +/-800 of 1000
 - Speed feedback filter coefficient: 0.25
 
 Use `SpeedControl::setTargetRpm(left, right)` to change the wheel targets and
@@ -128,6 +128,14 @@ are cleared. Set it back to `true` (1) to resume closed-loop speed control.
 The current automatic speed test starts both wheel targets at 50 RPM and
 raises them by 50 RPM every two seconds. The ramp stops increasing when it
 reaches 500 RPM and then holds that target.
+
+## Application Structure
+
+`empty_cpp.cpp` only initializes SysConfig and runs the application loop.
+`car_app.cpp` owns subsystem startup and cooperative scheduling,
+`speed_test.cpp` owns the stepped target test, and `pid_dashboard.cpp` owns
+OLED formatting and refresh timing. Hardware drivers and the 100 Hz control
+ISR remain isolated in their existing modules.
 
 ## Yahboom K230 UART Link
 
