@@ -333,6 +333,7 @@ def detection():
 
     try:
         uart = init_ball_uart()
+        send_ball_center(uart, -1, -1)
 
         # ----------------------------------------------------
         # 读取部署配置

@@ -8,14 +8,10 @@ namespace {
 
 constexpr std::uint32_t kRefreshPeriodSamples =
     Encoder::kSampleRateHz / 5U;
-constexpr std::uint32_t kK230PageHoldSamples =
-    2U * Encoder::kSampleRateHz;
 
 std::uint32_t g_displayedSequence = 0U;
-std::uint32_t g_lastK230Sequence = 0U;
 K230Protocol::BallPosition g_ballPosition = {};
 bool g_hasBallFrame = false;
-bool g_ballFramePending = false;
 
 void formatSigned(char *output, std::int32_t value, std::uint8_t digits)
 {
@@ -160,17 +156,14 @@ void init()
     OLED_ColorTurn(0);
     OLED_DisplayTurn(0);
     g_displayedSequence = 0U;
-    g_lastK230Sequence = 0U;
     g_ballPosition = {};
     g_hasBallFrame = false;
-    g_ballFramePending = false;
 }
 
 void setBallPosition(const K230Protocol::BallPosition &position)
 {
     g_ballPosition = position;
     g_hasBallFrame = true;
-    g_ballFramePending = true;
 }
 
 void update(std::uint32_t sampleSequence)
@@ -182,14 +175,7 @@ void update(std::uint32_t sampleSequence)
     }
 
     g_displayedSequence = sampleSequence;
-    if (g_ballFramePending) {
-        g_lastK230Sequence = sampleSequence;
-        g_ballFramePending = false;
-    }
-
-    if (g_hasBallFrame &&
-        (sampleSequence - g_lastK230Sequence) <
-            kK230PageHoldSamples) {
+    if (g_hasBallFrame) {
         showBallPosition(g_ballPosition);
     } else {
         show(SpeedControl::latest());

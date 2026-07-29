@@ -147,8 +147,8 @@ The MSPM0 stream parser accepts `BALL,x,y\r\n`, validates coordinates against
 the 640x480 AI frame, and shows `K230 BALL`, `X`, `Y`, and the decoded frame
 sequence on the OLED. `BALL,-1,-1\r\n` displays `K230 NO BALL` with `X:---`
 and `Y:---`. Invalid, partial, and overlong lines do not update the displayed
-position. If no valid frame is received for about two seconds, the display
-returns to the PID page.
+position. After the first valid frame, the OLED keeps the latest decoded K230
+position instead of timing out to the PID page.
 
 | Signal | MSPM0G3507 | Yahboom K230 communication connector |
 | --- | --- | --- |
@@ -178,3 +178,5 @@ The valid coordinate fields are zero-padded to three digits. When no ball is
 detected it sends `BALL,-1,-1\r\n`; set `SEND_NO_TARGET_FRAME = False` to
 suppress no-target frames. The script drains the previous MSPM0 echo before
 each transmission so the K230 receive FIFO does not accumulate echoed data.
+It also sends one no-target frame immediately after UART initialization, before
+model loading, to verify the complete K230-to-MSPM0-to-OLED path.
