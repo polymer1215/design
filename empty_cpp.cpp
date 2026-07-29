@@ -32,6 +32,7 @@
 
 #include "ti_msp_dl_config.h"
 #include "encoder.hpp"
+#include "k230_uart.hpp"
 #include "oled.h"
 #include "speed_controller.hpp"
 #include "tb6612.hpp"
@@ -128,6 +129,7 @@ int main(void)
     OLED_Init();
     OLED_ColorTurn(0);
     OLED_DisplayTurn(0);
+    K230Uart::init();
 
     SpeedControl::init();
     SpeedControl::setTunings(
@@ -143,6 +145,7 @@ int main(void)
     std::uint32_t nextSpeedStep = kSpeedTestStepTicks;
     std::uint32_t displayedSequence = 0U;
     while (1) {
+        K230Uart::serviceEcho();
         const Encoder::Sample sample = Encoder::latest();
 
         while (speedTestTargetRpm < kSpeedTestMaximumRpm &&

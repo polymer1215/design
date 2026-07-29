@@ -124,3 +124,23 @@ shows target RPM (`T`), measured RPM (`M`) and the signed PWM command.
 The current automatic speed test starts both wheel targets at 50 RPM and
 raises them by 50 RPM every two seconds. The ramp stops increasing when it
 reaches 500 RPM and then holds that target.
+
+## Yahboom K230 UART Link
+
+The K230 link is a bidirectional 115200-8-N-1 UART. Incoming bytes are placed
+in a 512-byte interrupt-driven ring buffer. The current application echoes
+the bytes unchanged and does not parse any Yahboom packet format.
+
+| Signal | MSPM0G3507 | Yahboom K230 communication connector |
+| --- | --- | --- |
+| MSPM0 RX | PA22 / UART2_RX | UART1_TXD / GPIO9 |
+| MSPM0 TX | PA21 / UART2_TX | UART1_RXD / GPIO10 |
+| Reference | GND | GND |
+
+Use 3.3 V UART logic, cross TX and RX, and connect the grounds. Do not connect
+a 5 V UART signal to either processor.
+
+Run `k230_uart_echo_test.py` in CanMV IDE. It sends one test line every 500 ms
+and prints `PASS` only when the MSPM0 returns exactly the same bytes. The
+script uses `machine.UART` directly and does not depend on `YbUart`,
+`YbProtocol`, or the reference project's K230 Python code.
