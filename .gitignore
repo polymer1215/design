@@ -1,0 +1,31 @@
+# CCS generated build directories
+Debug/
+Release/
+
+# Compiler and linker outputs
+*.o
+*.obj
+*.d
+*.d_raw
+*.out
+*.elf
+*.hex
+*.bin
+*.map
+*.xml
+
+# Generated SysConfig/build files
+ti_msp_dl_config.c
+ti_msp_dl_config.h
+device.opt
+device_linker.cmd
+device.cmd.genlibs
+Event.dot
+
+# Editor and operating-system temporary files
+*.bak
+*.tmp
+*.log
+*~
+.DS_Store
+Thumbs.db
