@@ -87,7 +87,7 @@ std::int16_t updatePid(
 
 namespace SpeedControl {
 
-volatile bool pidEnabled = true;
+volatile bool pidEnabled = false;
 
 void init()
 {
