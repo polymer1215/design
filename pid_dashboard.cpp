@@ -178,54 +178,49 @@ char hexDigit(std::uint8_t value)
         value < 10U ? '0' + value : 'A' + value - 10U);
 }
 
-void formatAnalogPair(char *line, std::uint8_t firstChannel,
-    std::uint8_t first, std::uint8_t second)
+void formatDigitalChannels(char *line, std::uint8_t firstChannel,
+    std::uint8_t digital)
 {
-    line[0] = static_cast<char>('1' + firstChannel);
-    line[1] = ':';
-    formatUnsigned(&line[2], first, 3U);
-    line[5] = ' ';
-    line[6] = static_cast<char>('2' + firstChannel);
-    line[7] = ':';
-    formatUnsigned(&line[8], second, 3U);
-    line[11] = '\0';
+    std::uint8_t index = 0U;
+    for (std::uint8_t offset = 0U; offset < 4U; ++offset) {
+        const std::uint8_t channel = firstChannel + offset;
+        line[index++] = static_cast<char>('1' + channel);
+        line[index++] = ':';
+        line[index++] =
+            (digital & (1U << channel)) != 0U ? '1' : '0';
+        if (offset != 3U) {
+            line[index++] = ' ';
+        }
+    }
+    line[index] = '\0';
 }
 
 void showGraySensor(const GraySensor::Sample &sample)
 {
-    char title[15] = "GRAY WAIT A:4C";
+    const char title[] = "GRAY GPIO";
     char digitalLine[15] = "D:00 N:000000";
-    char errorLine[11] = "ERR:000000";
-    char pairs[4][12] = {};
+    char channels1To4[16] = {};
+    char channels5To8[16] = {};
 
-    if (sample.connected) {
-        title[5] = 'O';
-        title[6] = 'K';
-        title[7] = ' ';
-        title[8] = ' ';
-    }
     digitalLine[2] = hexDigit((sample.digital >> 4U) & 0x0FU);
     digitalLine[3] = hexDigit(sample.digital & 0x0FU);
     formatUnsigned(&digitalLine[7], sample.sequence, 6U);
-    formatUnsigned(&errorLine[4], sample.errors, 6U);
-
-    for (std::uint8_t pair = 0U; pair < 4U; ++pair) {
-        const std::uint8_t channel = pair * 2U;
-        formatAnalogPair(pairs[pair], channel,
-            sample.analog[channel], sample.analog[channel + 1U]);
-    }
+    formatDigitalChannels(channels1To4, 0U, sample.digital);
+    formatDigitalChannels(channels5To8, 4U, sample.digital);
 
     OLED_Clear();
     OLED_ShowString(
         0, 0, reinterpret_cast<const u8 *>(title), 8, 1);
     OLED_ShowString(
         0, 8, reinterpret_cast<const u8 *>(digitalLine), 8, 1);
-    for (std::uint8_t pair = 0U; pair < 4U; ++pair) {
-        OLED_ShowString(0, static_cast<u8>(16U + pair * 8U),
-            reinterpret_cast<const u8 *>(pairs[pair]), 8, 1);
-    }
     OLED_ShowString(
-        0, 48, reinterpret_cast<const u8 *>(errorLine), 8, 1);
+        0, 16, reinterpret_cast<const u8 *>(channels1To4), 8, 1);
+    OLED_ShowString(
+        0, 24, reinterpret_cast<const u8 *>(channels5To8), 8, 1);
+    OLED_ShowString(
+        0, 40, reinterpret_cast<const u8 *>("PULL JUMPER ON"), 8, 1);
+    OLED_ShowString(
+        0, 48, reinterpret_cast<const u8 *>("RAW HIGH = 1"), 8, 1);
     OLED_Refresh();
 }
 

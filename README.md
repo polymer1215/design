@@ -72,8 +72,8 @@ or BO1/BO2 wires.
 ## OLED Display
 
 The project includes the SSD1306 128x64 framebuffer driver and fonts ported
-from `MSPM0_K230_OLED_Echo`. The display uses 7-bit I2C address `0x3C` on a
-100 kHz bus shared with the grayscale sensor.
+from `MSPM0_K230_OLED_Echo`. The display uses 7-bit I2C address `0x3C` at
+500 kHz.
 
 | OLED signal | MSPM0G3507 pin | Assignment |
 | --- | --- | --- |
@@ -195,27 +195,28 @@ previous echo never delays the next coordinate transmission.
 
 ## Ganwei Eight-channel Grayscale Sensor
 
-The grayscale sensor shares I2C0 with the OLED. With both AD0 and AD1 address
-jumpers open, its 7-bit address is `0x4C`. The driver retries the manual's
-`0xAA` ping until it receives `0x66`; it does not block vehicle startup while
-the sensor is absent or still initializing. Once connected, it samples at
-20 Hz:
+The sensor uses its eight parallel digital outputs instead of I2C. Install
+the sensor board's `PULL` jumper and then power-cycle the sensor. This selects
+open-drain output mode; the MSPM0 GPIO inputs use their internal pull-ups to
+3.3 V, so no external pull-up resistors are required. Keep the sensor powered
+from 5 V and connect all grounds.
 
-- `0xDD`: one digital byte, bit 0 through bit 7 map to channels 1 through 8.
-- `0xB0`: eight analog bytes returned in channel 1 through channel 8 order.
-
-The OLED alternates every second between a grayscale page and the existing
-K230/PID pages. `GRAY WAIT A:4C` means the ping has not succeeded. `GRAY OK`
-shows the digital bit mask, sample count, all eight analog values and the
-accumulated I2C error count.
-
-| Sensor signal | Connection |
+| Sensor output | MSPM0G3507 pin |
 | --- | --- |
-| VCC | Regulated 5 V |
-| GND | Common ground |
-| SCL/SDA | 5 V side of a bidirectional I2C level shifter |
-| Level-shifter 3.3 V side | PA1 SCL / PA0 SDA, shared with OLED |
+| OUT1 | PB0 |
+| OUT2 | PB1 |
+| OUT3 | PB4 |
+| OUT4 | PB5 |
+| OUT5 | PB8 |
+| OUT6 | PB9 |
+| OUT7 | PB10 |
+| OUT8 | PB11 |
 
-Keep the OLED and MSPM0 side pulled up to 3.3 V. Put the sensor's optional
-5 V pull-ups only on the level shifter's sensor side. Do not directly connect
-the OLED to a bus pulled up to 5 V.
+Sampling runs at the encoder's 100 Hz rate. The packed digital byte maps OUT1
+to bit 0 through OUT8 to bit 7. The OLED `GRAY GPIO` page shows the hexadecimal
+mask and each raw channel state. A disconnected open-drain signal normally
+reads high because of the internal pull-up, so this interface cannot provide
+automatic disconnect detection.
+
+Do not connect the sensor SCL/SDA pins. PA0/PA1 remain dedicated to the OLED's
+hardware I2C bus.
