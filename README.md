@@ -150,6 +150,12 @@ and `Y:---`. Invalid, partial, and overlong lines do not update the displayed
 position. After the first valid frame, the OLED keeps the latest decoded K230
 position instead of timing out to the PID page.
 
+Before the first valid frame, the OLED alternates once per second between the
+motor page and receive diagnostics. `K230 WAIT` with `RX:000000` means UART2
+has not received any byte. `K230 RAW` means bytes are arriving, but no complete
+valid `BALL,x,y` line has been decoded. The `DROP` line reports UART ring-buffer
+overflow.
+
 | Signal | MSPM0G3507 | Yahboom K230 communication connector |
 | --- | --- | --- |
 | MSPM0 RX | PA22 / UART2_RX | UART1_TXD / GPIO9 |

@@ -1,6 +1,7 @@
 #include "pid_dashboard.hpp"
 
 #include "encoder.hpp"
+#include "k230_uart.hpp"
 #include "oled.h"
 #include "speed_controller.hpp"
 
@@ -146,6 +147,30 @@ void showBallPosition(const K230Protocol::BallPosition &position)
     OLED_Refresh();
 }
 
+void showK230Status(const K230Uart::Statistics &statistics)
+{
+    char receivedLine[10] = "RX:";
+    char droppedLine[10] = "DROP:";
+
+    formatUnsigned(&receivedLine[3], statistics.receivedBytes, 6U);
+    receivedLine[9] = '\0';
+    formatUnsigned(&droppedLine[5], statistics.droppedBytes, 4U);
+    droppedLine[9] = '\0';
+
+    const u8 *title = reinterpret_cast<const u8 *>(
+        statistics.receivedBytes == 0U ? "K230 WAIT" : "K230 RAW");
+
+    OLED_Clear();
+    OLED_ShowString(0, 0, title, 16, 1);
+    OLED_ShowString(
+        0, 16, reinterpret_cast<const u8 *>(receivedLine), 16, 1);
+    OLED_ShowString(
+        0, 32, reinterpret_cast<const u8 *>(droppedLine), 16, 1);
+    OLED_ShowString(
+        0, 48, reinterpret_cast<const u8 *>("NEED BALL,x,y"), 16, 1);
+    OLED_Refresh();
+}
+
 }  // namespace
 
 namespace PidDashboard {
@@ -177,6 +202,8 @@ void update(std::uint32_t sampleSequence)
     g_displayedSequence = sampleSequence;
     if (g_hasBallFrame) {
         showBallPosition(g_ballPosition);
+    } else if (((sampleSequence / Encoder::kSampleRateHz) & 1U) == 0U) {
+        showK230Status(K230Uart::statistics());
     } else {
         show(SpeedControl::latest());
     }
