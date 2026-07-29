@@ -87,6 +87,8 @@ std::int16_t updatePid(
 
 namespace SpeedControl {
 
+volatile bool pidEnabled = true;
+
 void init()
 {
     __disable_irq();
@@ -155,6 +157,17 @@ void updateFromEncoder(
         kSpeedFilterAlpha * (leftRawRpm - g_leftMeasuredRpm);
     g_rightMeasuredRpm +=
         kSpeedFilterAlpha * (rightRawRpm - g_rightMeasuredRpm);
+
+    if (!pidEnabled) {
+        g_leftPid.integral = 0.0F;
+        g_rightPid.integral = 0.0F;
+        g_leftPid.previousMeasurement = g_leftMeasuredRpm;
+        g_rightPid.previousMeasurement = g_rightMeasuredRpm;
+        g_leftOutput = 0;
+        g_rightOutput = 0;
+        TB6612::coast();
+        return;
+    }
 
     g_leftOutput =
         updatePid(g_leftPid, g_leftTargetRpm, g_leftMeasuredRpm);

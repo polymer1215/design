@@ -11,6 +11,12 @@ constexpr float kDefaultKd = 0.0F;
 constexpr float kDefaultTargetRpm = 100.0F;
 constexpr std::int16_t kOutputLimit = 700;
 
+/*
+ * Runtime PID switch. Set to false (0) to stop both motor outputs while
+ * keeping encoder speed measurement active.
+ */
+extern volatile bool pidEnabled;
+
 struct Status {
     float leftTargetRpm;
     float rightTargetRpm;
