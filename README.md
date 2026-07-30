@@ -91,7 +91,7 @@ Call `OLED_Init()` after `SYSCFG_DL_init()`, update the framebuffer with
 
 Both Hall encoders are decoded using GPIO interrupts on every A/B edge.
 Sampling runs at 100 Hz using SysTick, while the OLED refreshes at 5 Hz.
-No PID output is applied yet.
+The wheel-speed PID is the active motor-control path.
 
 | Encoder signal | MSPM0G3507 pin | Wheel |
 | --- | --- | --- |
@@ -105,37 +105,25 @@ quadrature x4 decoding: `13 * 28 * 4 = 1456` counts per wheel revolution.
 Encoder signals must not exceed 3.3 V. The left encoder polarity is inverted
 in software so that forward motion produces positive feedback on both wheels.
 
-## 100 Hz Wheel Speed PID
+## 100 Hz Wheel-Speed PID
 
-The encoder sampling ISR runs two independent wheel-speed PID controllers at
-100 Hz. The initial test settings are:
+SysTick snapshots both encoders and runs the two wheel-speed PID controllers
+at 100 Hz. Speed measurement uses a rolling four-sample count window, improving
+the steady-state quantization from about 4.12 RPM/count to 1.03 RPM/count while
+retaining the 100 Hz control update.
 
-- Initial target: 50 RPM for each wheel
-- Kp: 30.0
-- Ki: 20.0
-- Kd: 0.0
-- PWM command limit: +/-800 of 1000
-- Speed feedback filter coefficient: 0.25
-
-Use `SpeedControl::setTargetRpm(left, right)` to change the wheel targets and
-`SpeedControl::setTunings(kp, ki, kd)` to tune both controllers. The OLED
-shows target RPM (`T`), measured RPM (`M`) and the signed PWM command.
-
-Set `SpeedControl::pidEnabled` to `false` (0) to disable PID output at runtime.
-Encoder measurement continues, but both motor outputs and the saved PID state
-are cleared. Set it back to `true` (1) to resume closed-loop speed control.
-
-The current automatic speed test starts both wheel targets at 50 RPM and
-raises them by 50 RPM every two seconds. The ramp stops increasing when it
-reaches 500 RPM and then holds that target.
+Both wheels use a fixed 100 RPM target. Change `kDefaultTargetRpm` or call
+`SpeedControl::setTargetRpm()` to select another target. The default gains are
+Kp=30, Ki=20 and Kd=0, with the PWM command limited to +/-800.
 
 ## Application Structure
 
 `empty_cpp.cpp` only initializes SysConfig and runs the application loop.
 `car_app.cpp` owns subsystem startup and cooperative scheduling,
-`speed_test.cpp` owns the stepped target test, and `pid_dashboard.cpp` owns
-OLED formatting and refresh timing. Hardware drivers and the 100 Hz control
-ISR remain isolated in their existing modules.
+and `pid_dashboard.cpp` owns OLED formatting and refresh timing. The encoder
+SysTick ISR records each sample and runs the 100 Hz speed-control update. The
+line-tracking controller and stepped speed test remain available in the project
+but are not initialized or scheduled.
 
 ## Yahboom K230 UART Link
 
@@ -220,3 +208,45 @@ automatic disconnect detection.
 
 Do not connect the sensor SCL/SDA pins. PA0/PA1 remain dedicated to the OLED's
 hardware I2C bus.
+
+## Inactive Single-loop Line Tracking PID
+
+The line-tracking implementation can run at the existing 100 Hz sensor sampling
+rate, but it is currently inactive while the wheel-speed loop is being tested.
+When enabled, it uses one steering PID output to directly mix the two TB6612
+PWM commands.
+
+The active-low sensor byte is converted to the same OUT1-to-bit7 line mask used
+by the `D:\design\5_29` reference controller. A mask must be seen twice before
+it changes the steering error. The initial controller settings are:
+
+- Base PWM command: 200 of 1000
+- Kp: 150
+- Ki: 0
+- Kd: 0.1 s (equivalent to the previous per-sample Kd of 10 at 100 Hz)
+- Steering correction limit: +/-500
+
+The motor mix is `left = base - correction` and
+`right = base + correction`. Use `LineTracking::setTunings()` and
+`LineTracking::setBaseCommand()` for real-car tuning. Set
+`LineTracking::enabled` to `false`, or call `LineTracking::stop()`, to coast
+both motors.
+
+When three or more sensors detect black, the controller records the complete
+detected mask and black-sensor count for a future stop-line decision, but only
+sensors 4 and 5 are retained in the mask sent to the steering PID.
+
+## Reusable PID Controller
+
+`pid_controller.hpp` and `pid_controller.cpp` provide a hardware-independent,
+allocation-free positional PID controller. Each instance owns its own gains,
+limits, integral and derivative history. The API uses a control interval in
+seconds and supports output limiting, integral limiting, conditional
+anti-windup, derivative-on-error or derivative-on-measurement, and access to
+the latest P/I/D terms.
+
+The two wheel-speed controllers each use one independent `PidController`
+instance. The line tracker uses a third instance and still writes its mixed
+commands directly to PWM; it is not cascaded through the wheel-speed loop.
+Future vision-position and stepper-motor controllers can create additional
+instances without depending on the car, encoder, sensor, or TB6612 modules.

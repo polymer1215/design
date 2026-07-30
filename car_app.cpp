@@ -6,7 +6,6 @@
 #include "k230_uart.hpp"
 #include "pid_dashboard.hpp"
 #include "speed_controller.hpp"
-#include "speed_test.hpp"
 #include "tb6612.hpp"
 
 namespace CarApp {
@@ -22,9 +21,7 @@ void serviceK230Link()
 
     while (count < kMaximumBytesPerRun && K230Uart::read(data)) {
         K230Uart::write(data);
-        if (K230Protocol::consume(data, position)) {
-            PidDashboard::setBallPosition(position);
-        }
+        K230Protocol::consume(data, position);
         ++count;
     }
 }
@@ -50,7 +47,10 @@ void init()
         SpeedControl::kDefaultKp,
         SpeedControl::kDefaultKi,
         SpeedControl::kDefaultKd);
-    SpeedTest::init();
+    SpeedControl::setTargetRpm(
+        SpeedControl::kDefaultTargetRpm,
+        SpeedControl::kDefaultTargetRpm);
+    SpeedControl::pidEnabled = true;
     Encoder::init();
 }
 
@@ -59,7 +59,6 @@ void runOnce()
     serviceK230Link();
 
     const Encoder::Sample sample = Encoder::latest();
-    SpeedTest::update(sample.sequence);
     GraySensor::update(sample.sequence);
     PidDashboard::update(sample.sequence);
 }

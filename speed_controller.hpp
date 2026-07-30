@@ -5,8 +5,8 @@
 
 namespace SpeedControl {
 
-constexpr float kDefaultKp = 30.0F;
-constexpr float kDefaultKi = 20.0F;
+constexpr float kDefaultKp = 11.1F;
+constexpr float kDefaultKi = 70.0F;
 constexpr float kDefaultKd = 0.0F;
 constexpr float kDefaultTargetRpm = 100.0F;
 constexpr std::int16_t kOutputLimit = 800;

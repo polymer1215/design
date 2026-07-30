@@ -1,6 +1,7 @@
 #include "speed_controller.hpp"
 
 #include "encoder.hpp"
+#include "pid_controller.hpp"
 #include "tb6612.hpp"
 #include "ti_msp_dl_config.h"
 
@@ -11,12 +12,7 @@ constexpr float kControlPeriodSeconds =
 constexpr float kCountsToRpm =
     (60.0F * static_cast<float>(Encoder::kSampleRateHz)) /
     static_cast<float>(Encoder::kCountsPerWheelRevolution);
-constexpr float kSpeedFilterAlpha = 0.25F;
-
-struct PidState {
-    float integral;
-    float previousMeasurement;
-};
+constexpr std::uint32_t kSpeedMeasurementWindowSamples = 4U;
 
 volatile float g_leftTargetRpm = 0.0F;
 volatile float g_rightTargetRpm = 0.0F;
@@ -25,62 +21,93 @@ volatile float g_rightMeasuredRpm = 0.0F;
 volatile std::int16_t g_leftOutput = 0;
 volatile std::int16_t g_rightOutput = 0;
 
-float g_kp = SpeedControl::kDefaultKp;
-float g_ki = SpeedControl::kDefaultKi;
-float g_kd = SpeedControl::kDefaultKd;
-PidState g_leftPid = {};
-PidState g_rightPid = {};
+std::int32_t g_leftCountHistory[kSpeedMeasurementWindowSamples] = {};
+std::int32_t g_rightCountHistory[kSpeedMeasurementWindowSamples] = {};
+std::int32_t g_leftWindowCounts = 0;
+std::int32_t g_rightWindowCounts = 0;
+std::uint32_t g_speedHistoryIndex = 0U;
+std::uint32_t g_speedHistorySamples = 0U;
 
-float clampFloat(float value, float minimum, float maximum)
+Control::PidController g_leftPid;
+Control::PidController g_rightPid;
+
+void resetSpeedMeasurement()
 {
-    if (value > maximum) {
-        return maximum;
+    for (std::uint32_t i = 0U;
+         i < kSpeedMeasurementWindowSamples; ++i) {
+        g_leftCountHistory[i] = 0;
+        g_rightCountHistory[i] = 0;
     }
-    if (value < minimum) {
-        return minimum;
+    g_leftWindowCounts = 0;
+    g_rightWindowCounts = 0;
+    g_speedHistoryIndex = 0U;
+    g_speedHistorySamples = 0U;
+}
+
+void updateSpeedMeasurement(
+    std::int32_t leftDeltaCounts, std::int32_t rightDeltaCounts)
+{
+    g_leftWindowCounts -= g_leftCountHistory[g_speedHistoryIndex];
+    g_rightWindowCounts -= g_rightCountHistory[g_speedHistoryIndex];
+
+    g_leftCountHistory[g_speedHistoryIndex] = leftDeltaCounts;
+    g_rightCountHistory[g_speedHistoryIndex] = rightDeltaCounts;
+    g_leftWindowCounts += leftDeltaCounts;
+    g_rightWindowCounts += rightDeltaCounts;
+
+    g_speedHistoryIndex =
+        (g_speedHistoryIndex + 1U) % kSpeedMeasurementWindowSamples;
+    if (g_speedHistorySamples < kSpeedMeasurementWindowSamples) {
+        ++g_speedHistorySamples;
     }
-    return value;
+
+    const float windowScale =
+        kCountsToRpm / static_cast<float>(g_speedHistorySamples);
+    g_leftMeasuredRpm =
+        static_cast<float>(g_leftWindowCounts) * windowScale;
+    g_rightMeasuredRpm =
+        static_cast<float>(g_rightWindowCounts) * windowScale;
+}
+
+float integralLimitFor(float ki)
+{
+    const float magnitude = (ki >= 0.0F) ? ki : -ki;
+    if (magnitude == 0.0F) {
+        return static_cast<float>(SpeedControl::kOutputLimit);
+    }
+    return static_cast<float>(SpeedControl::kOutputLimit) / magnitude;
+}
+
+Control::PidConfig makePidConfig(float kp, float ki, float kd)
+{
+    const float integralLimit = integralLimitFor(ki);
+    return {
+        kp,
+        ki,
+        kd,
+        -static_cast<float>(SpeedControl::kOutputLimit),
+        static_cast<float>(SpeedControl::kOutputLimit),
+        -integralLimit,
+        integralLimit,
+        Control::DerivativeMode::Measurement,
+    };
+}
+
+std::int16_t roundCommand(float output)
+{
+    return static_cast<std::int16_t>(
+        output >= 0.0F ? output + 0.5F : output - 0.5F);
 }
 
 std::int16_t updatePid(
-    PidState &state, float target, float measurement)
+    Control::PidController &pid, float target, float measurement)
 {
     if (target == 0.0F) {
-        state.integral = 0.0F;
-        state.previousMeasurement = measurement;
+        pid.reset(measurement);
         return 0;
     }
-
-    const float error = target - measurement;
-    const float derivative =
-        -(measurement - state.previousMeasurement) / kControlPeriodSeconds;
-    const float candidateIntegral =
-        state.integral + error * kControlPeriodSeconds;
-
-    const float rawOutput =
-        g_kp * error + g_ki * candidateIntegral + g_kd * derivative;
-    const float limitedOutput = clampFloat(rawOutput,
-        -static_cast<float>(SpeedControl::kOutputLimit),
-         static_cast<float>(SpeedControl::kOutputLimit));
-
-    /*
-     * Conditional integration prevents windup while saturated, but permits
-     * integration when the error is driving the output back into range.
-     */
-    const bool saturatedHigh =
-        rawOutput > static_cast<float>(SpeedControl::kOutputLimit);
-    const bool saturatedLow =
-        rawOutput < -static_cast<float>(SpeedControl::kOutputLimit);
-    if ((!saturatedHigh && !saturatedLow) ||
-        (saturatedHigh && error < 0.0F) ||
-        (saturatedLow && error > 0.0F)) {
-        state.integral = candidateIntegral;
-    }
-
-    state.previousMeasurement = measurement;
-    return static_cast<std::int16_t>(
-        limitedOutput >= 0.0F ? limitedOutput + 0.5F
-                              : limitedOutput - 0.5F);
+    return roundCommand(
+        pid.update(target, measurement, kControlPeriodSeconds));
 }
 
 }  // namespace
@@ -98,8 +125,11 @@ void init()
     g_rightMeasuredRpm = 0.0F;
     g_leftOutput = 0;
     g_rightOutput = 0;
-    g_leftPid = {};
-    g_rightPid = {};
+    resetSpeedMeasurement();
+    g_leftPid.configure(makePidConfig(
+        kDefaultKp, kDefaultKi, kDefaultKd));
+    g_rightPid.configure(makePidConfig(
+        kDefaultKp, kDefaultKi, kDefaultKd));
     __enable_irq();
     TB6612::coast();
 }
@@ -115,11 +145,9 @@ void setTargetRpm(float leftRpm, float rightRpm)
 void setTunings(float kp, float ki, float kd)
 {
     __disable_irq();
-    g_kp = kp;
-    g_ki = ki;
-    g_kd = kd;
-    g_leftPid.integral = 0.0F;
-    g_rightPid.integral = 0.0F;
+    const Control::PidConfig config = makePidConfig(kp, ki, kd);
+    g_leftPid.configure(config);
+    g_rightPid.configure(config);
     __enable_irq();
 }
 
@@ -148,21 +176,11 @@ Status latest()
 void updateFromEncoder(
     std::int32_t leftDeltaCounts, std::int32_t rightDeltaCounts)
 {
-    const float leftRawRpm =
-        static_cast<float>(leftDeltaCounts) * kCountsToRpm;
-    const float rightRawRpm =
-        static_cast<float>(rightDeltaCounts) * kCountsToRpm;
-
-    g_leftMeasuredRpm +=
-        kSpeedFilterAlpha * (leftRawRpm - g_leftMeasuredRpm);
-    g_rightMeasuredRpm +=
-        kSpeedFilterAlpha * (rightRawRpm - g_rightMeasuredRpm);
+    updateSpeedMeasurement(leftDeltaCounts, rightDeltaCounts);
 
     if (!pidEnabled) {
-        g_leftPid.integral = 0.0F;
-        g_rightPid.integral = 0.0F;
-        g_leftPid.previousMeasurement = g_leftMeasuredRpm;
-        g_rightPid.previousMeasurement = g_rightMeasuredRpm;
+        g_leftPid.reset(g_leftMeasuredRpm);
+        g_rightPid.reset(g_rightMeasuredRpm);
         g_leftOutput = 0;
         g_rightOutput = 0;
         TB6612::coast();
