@@ -27,6 +27,7 @@ struct Status {
 };
 
 void init();
+// Positive RPM selects the vehicle-forward direction defined by TB6612.
 void setTargetRpm(float leftRpm, float rightRpm);
 void setTunings(float kp, float ki, float kd);
 void stop();

@@ -4,6 +4,7 @@
 #include "gray_sensor.hpp"
 #include "k230_protocol.hpp"
 #include "k230_uart.hpp"
+#include "line_tracking.hpp"
 #include "pid_dashboard.hpp"
 #include "speed_controller.hpp"
 #include "tb6612.hpp"
@@ -47,9 +48,7 @@ void init()
         SpeedControl::kDefaultKp,
         SpeedControl::kDefaultKi,
         SpeedControl::kDefaultKd);
-    SpeedControl::setTargetRpm(
-        SpeedControl::kDefaultTargetRpm,
-        SpeedControl::kDefaultTargetRpm);
+    LineTracking::init();
     SpeedControl::pidEnabled = true;
     Encoder::init();
 }
@@ -60,6 +59,7 @@ void runOnce()
 
     const Encoder::Sample sample = Encoder::latest();
     GraySensor::update(sample.sequence);
+    LineTracking::update(sample.sequence);
     PidDashboard::update(sample.sequence);
 }
 

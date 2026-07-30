@@ -44,17 +44,17 @@ Compile, load and run the example.
 
 The project runs the CPU at 80 MHz from the board's 40 MHz HFXT and SYSPLL. It
 configures one synchronized 20 kHz TIMA1 PWM peripheral for both drive wheels.
-Channel A is the right wheel and channel B is the left wheel. STBY must remain
-connected to 3.3 V.
+After reversing the vehicle heading, channel A is the new left wheel and
+channel B is the new right wheel. STBY must remain connected to 3.3 V.
 
 | TB6612 signal | MSPM0G3507 pin | Assignment |
 | --- | --- | --- |
-| PWMA | PA16 | TIMA1 CCP1, right wheel |
-| AIN1 | PA14 | Right direction |
-| AIN2 | PA15 | Right direction |
-| PWMB | PA17 | TIMA1 CCP0, left wheel |
-| BIN1 | PA12 | Left direction |
-| BIN2 | PA13 | Left direction |
+| PWMA | PA16 | TIMA1 CCP1, new left wheel |
+| AIN1 | PA14 | New left direction |
+| AIN2 | PA15 | New left direction |
+| PWMB | PA17 | TIMA1 CCP0, new right wheel |
+| BIN1 | PA12 | New right direction |
+| BIN2 | PA13 | New right direction |
 
 Include `tb6612.hpp` and call the APIs after `SYSCFG_DL_init()`:
 
@@ -65,9 +65,10 @@ TB6612::coast();
 TB6612::brake();
 ```
 
-Positive commands select IN1 low and IN2 high for both wheels. If either wheel
-rotates opposite to the vehicle-forward direction, swap that motor's AO1/AO2
-or BO1/BO2 wires.
+The vehicle-forward direction has been reversed in software. Positive commands
+now select IN1 high and IN2 low for both wheels, so the car travels opposite to
+its original forward direction without changing motor wiring. Negative commands
+select the original forward direction.
 
 ## OLED Display
 
@@ -95,15 +96,16 @@ The wheel-speed PID is the active motor-control path.
 
 | Encoder signal | MSPM0G3507 pin | Wheel |
 | --- | --- | --- |
-| E1A | PB2 | Right |
-| E1B | PB3 | Right |
-| E2A | PB6 | Left |
-| E2B | PB7 | Left |
+| E1A | PB2 | New left (original right) |
+| E1B | PB3 | New left (original right) |
+| E2A | PB6 | New right (original left) |
+| E2B | PB7 | New right (original left) |
 
 The current conversion assumes 13 motor-shaft lines, a 28:1 gearbox and
 quadrature x4 decoding: `13 * 28 * 4 = 1456` counts per wheel revolution.
-Encoder signals must not exceed 3.3 V. The left encoder polarity is inverted
-in software so that forward motion produces positive feedback on both wheels.
+Encoder signals must not exceed 3.3 V. Both encoder polarities are matched to
+the redefined vehicle-forward direction: positive motor commands and motion in
+the new forward direction produce positive speed feedback on both wheels.
 
 ## 100 Hz Wheel-Speed PID
 
@@ -112,9 +114,10 @@ at 100 Hz. Speed measurement uses a rolling four-sample count window, improving
 the steady-state quantization from about 4.12 RPM/count to 1.03 RPM/count while
 retaining the 100 Hz control update.
 
-Both wheels use a fixed 100 RPM target. Change `kDefaultTargetRpm` or call
-`SpeedControl::setTargetRpm()` to select another target. The default gains are
-Kp=30, Ki=20 and Kd=0, with the PWM command limited to +/-800.
+The line-tracking outer loop supplies separate left and right RPM targets. The
+speed-loop default gains are Kp=11.1, Ki=70 and Kd=0, with the PWM command
+limited to +/-800. Positive target RPM uses the redefined forward direction;
+negative target RPM uses the original forward direction.
 
 ## Application Structure
 
@@ -122,8 +125,8 @@ Kp=30, Ki=20 and Kd=0, with the PWM command limited to +/-800.
 `car_app.cpp` owns subsystem startup and cooperative scheduling,
 and `pid_dashboard.cpp` owns OLED formatting and refresh timing. The encoder
 SysTick ISR records each sample and runs the 100 Hz speed-control update. The
-line-tracking controller and stepped speed test remain available in the project
-but are not initialized or scheduled.
+line-tracking outer loop runs once per new sensor sample and updates the two
+speed targets. The stepped speed test remains available but is not scheduled.
 
 ## Yahboom K230 UART Link
 
@@ -209,32 +212,40 @@ automatic disconnect detection.
 Do not connect the sensor SCL/SDA pins. PA0/PA1 remain dedicated to the OLED's
 hardware I2C bus.
 
-## Inactive Single-loop Line Tracking PID
+## Cascaded Line-Tracking PID
 
-The line-tracking implementation can run at the existing 100 Hz sensor sampling
-rate, but it is currently inactive while the wheel-speed loop is being tested.
-When enabled, it uses one steering PID output to directly mix the two TB6612
-PWM commands.
+Line tracking is the outer loop of the active cascaded controller. It runs at
+the 100 Hz sensor sampling rate and outputs a differential RPM correction. The
+two inner wheel-speed PID controllers independently convert their RPM errors
+to TB6612 PWM commands.
 
 The active-low sensor byte is converted to the same OUT1-to-bit7 line mask used
-by the `D:\design\5_29` reference controller. A mask must be seen twice before
-it changes the steering error. The initial controller settings are:
+by the `D:\design\5_29` reference controller. The unchanged sensor module is
+mounted at the new vehicle front, so its channel order and per-sensor weights
+use the symmetric per-sensor weights derived from the original STM32 state
+table: `+6, +4, +2, +1, -1, -2, -4, -6`. For every nonzero mask, including
+masks with three or more active sensors, the error is the average of all active
+sensor weights. Every new sample updates the outer loop. The correction
+magnitude reaches the 100 RPM limit at either outermost sensor. The controller
+settings are:
 
-- Base PWM command: 200 of 1000
-- Kp: 150
+- Base speed: 100 RPM
+- Kp: 25
 - Ki: 0
-- Kd: 0.1 s (equivalent to the previous per-sample Kd of 10 at 100 Hz)
-- Steering correction limit: +/-500
+- Kd: 0
+- Differential correction limit: +/-100 RPM
 
-The motor mix is `left = base - correction` and
-`right = base + correction`. Use `LineTracking::setTunings()` and
-`LineTracking::setBaseCommand()` for real-car tuning. Set
-`LineTracking::enabled` to `false`, or call `LineTracking::stop()`, to coast
-both motors.
+The target mix is `left_rpm = base_rpm - correction_rpm` and
+`right_rpm = base_rpm + correction_rpm`, clamped to 0 through twice the base
+speed. Use `LineTracking::setTunings()` and `LineTracking::setBaseRpm()` for
+real-car tuning. Set `LineTracking::enabled` to `false`, or call
+`LineTracking::stop()`, to command zero speed on both wheels.
 
-When three or more sensors detect black, the controller records the complete
-detected mask and black-sensor count for a future stop-line decision, but only
-sensors 4 and 5 are retained in the mask sent to the steering PID.
+When three or more sensors detect black, the controller still records the
+wide-line flag and black-sensor count for diagnostics, but applies the same
+weighted-average calculation to the complete mask. If no sensor detects black,
+the outer PID state is reset and both wheels continue straight at the base
+speed.
 
 ## Reusable PID Controller
 
@@ -246,7 +257,7 @@ anti-windup, derivative-on-error or derivative-on-measurement, and access to
 the latest P/I/D terms.
 
 The two wheel-speed controllers each use one independent `PidController`
-instance. The line tracker uses a third instance and still writes its mixed
-commands directly to PWM; it is not cascaded through the wheel-speed loop.
-Future vision-position and stepper-motor controllers can create additional
-instances without depending on the car, encoder, sensor, or TB6612 modules.
+instance. The line tracker uses a third instance as the outer loop and writes
+only RPM targets; it never writes PWM directly. Future vision-position and
+stepper-motor controllers can create additional instances without depending
+on the car, encoder, sensor, or TB6612 modules.

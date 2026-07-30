@@ -11,6 +11,7 @@ constexpr std::int32_t kGearRatio = 28;
 constexpr std::int32_t kQuadratureMultiplier = 4;
 constexpr std::int32_t kCountsPerWheelRevolution =
     kMotorLinesPerRevolution * kGearRatio * kQuadratureMultiplier;
+// Match the redefined vehicle-forward direction used by the motor driver.
 constexpr std::int32_t kRightEncoderPolarity = 1;
 constexpr std::int32_t kLeftEncoderPolarity = -1;
 

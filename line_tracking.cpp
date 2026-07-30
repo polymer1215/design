@@ -3,7 +3,7 @@
 #include "encoder.hpp"
 #include "gray_sensor.hpp"
 #include "pid_controller.hpp"
-#include "tb6612.hpp"
+#include "speed_controller.hpp"
 #include "ti_msp_dl_config.h"
 
 namespace {
@@ -11,17 +11,14 @@ namespace {
 constexpr float kControlPeriodSeconds =
     1.0F / static_cast<float>(Encoder::kSampleRateHz);
 
-std::int16_t g_baseCommand = LineTracking::kDefaultBaseCommand;
+float g_baseRpm = LineTracking::kDefaultBaseRpm;
 
 Control::PidController g_steeringPid;
-std::uint8_t g_candidateMask = 0;
-std::uint8_t g_sameMaskCount = 0;
 std::uint32_t g_lastSequence = 0;
 std::uint32_t g_lastPidSequence = 0;
 LineTracking::Status g_status = {};
 
-std::int32_t clampValue(
-    std::int32_t value, std::int32_t minimum, std::int32_t maximum)
+float clampValue(float value, float minimum, float maximum)
 {
     if (value > maximum) {
         return maximum;
@@ -60,102 +57,36 @@ std::uint8_t countSetBits(std::uint8_t mask)
     return count;
 }
 
-std::uint8_t makeControlMask(
-    std::uint8_t detectedMask, std::uint8_t blackSensorCount)
+float weightedErrorForMask(std::uint8_t mask)
 {
-    if (blackSensorCount >= LineTracking::kWideLineSensorCount) {
-        /*
-         * Keep the original detection in Status for the future stop-line
-         * decision. During the current drive-through test, only sensors 4
-         * and 5 are allowed to influence steering on a wide black region.
-         */
-        return detectedMask & LineTracking::kCenterSensorMask;
-    }
-    return detectedMask;
-}
+    constexpr float kSensorWeights[8] = {
+        6.0F, 4.0F, 2.0F, 1.0F,
+        -1.0F, -2.0F, -4.0F, -6.0F
+    };
+    float weightSum = 0.0F;
+    std::uint8_t activeCount = 0U;
 
-bool maskIsStable(std::uint8_t mask)
-{
-    if (mask != g_candidateMask) {
-        g_candidateMask = mask;
-        g_sameMaskCount = 1U;
-        return false;
+    for (std::uint8_t channel = 0U; channel < 8U; ++channel) {
+        const std::uint8_t channelBit =
+            static_cast<std::uint8_t>(0x80U >> channel);
+        if ((mask & channelBit) != 0U) {
+            weightSum += kSensorWeights[channel];
+            ++activeCount;
+        }
     }
 
-    if (g_sameMaskCount < 2U) {
-        ++g_sameMaskCount;
-    }
-    return g_sameMaskCount >= 2U;
-}
-
-std::int8_t errorForMask(std::uint8_t mask, std::int8_t previousError)
-{
-    switch (mask) {
-        case 0x00:
-        case 0x18:
-        case 0x3C:
-        case 0x7E:
-            return 0;
-
-        case 0x08:
-        case 0x10:
-            return 1;
-
-        case 0x20:
-        case 0x30:
-        case 0x38:
-            return 2;
-
-        case 0x40:
-        case 0x60:
-        case 0x78:
-        case 0x7C:
-            return 4;
-
-        case 0x80:
-        case 0xA0:
-        case 0xC0:
-        case 0xE0:
-        case 0xF0:
-        case 0xF8:
-        case 0xFC:
-        case 0xFE:
-            return 6;
-
-        case 0x04:
-        case 0x0C:
-        case 0x1C:
-            return -2;
-
-        case 0x02:
-        case 0x06:
-        case 0x0E:
-        case 0x1E:
-        case 0x3E:
-            return -4;
-
-        case 0x01:
-        case 0x03:
-        case 0x07:
-        case 0x0F:
-        case 0x1F:
-        case 0x3F:
-        case 0x7D:
-            return -6;
-
-        default:
-            // Keep the last steering direction for an unlisted transition.
-            return previousError;
-    }
+    return activeCount == 0U
+        ? 0.0F
+        : weightSum / static_cast<float>(activeCount);
 }
 
 float integralLimitFor(float ki)
 {
     const float magnitude = (ki >= 0.0F) ? ki : -ki;
     if (magnitude == 0.0F) {
-        return static_cast<float>(LineTracking::kCorrectionLimit);
+        return LineTracking::kCorrectionLimitRpm;
     }
-    return static_cast<float>(LineTracking::kCorrectionLimit) / magnitude;
+    return LineTracking::kCorrectionLimitRpm / magnitude;
 }
 
 Control::PidConfig makePidConfig(float kp, float ki, float kd)
@@ -165,23 +96,16 @@ Control::PidConfig makePidConfig(float kp, float ki, float kd)
         kp,
         ki,
         kd,
-        -static_cast<float>(LineTracking::kCorrectionLimit),
-        static_cast<float>(LineTracking::kCorrectionLimit),
+        -LineTracking::kCorrectionLimitRpm,
+        LineTracking::kCorrectionLimitRpm,
         -integralLimit,
         integralLimit,
         Control::DerivativeMode::Measurement,
     };
 }
 
-std::int16_t roundCorrection(float correction)
-{
-    return static_cast<std::int16_t>(
-        correction >= 0.0F ? correction + 0.5F
-                           : correction - 0.5F);
-}
-
-std::int16_t computeCorrection(
-    std::int8_t error, std::uint32_t sampleSequence)
+float computeCorrection(
+    float error, std::uint32_t sampleSequence)
 {
     std::uint32_t elapsedSamples = 1U;
     if (g_lastPidSequence != 0U) {
@@ -194,24 +118,35 @@ std::int16_t computeCorrection(
 
     const float dtSeconds =
         static_cast<float>(elapsedSamples) * kControlPeriodSeconds;
-    const float output = g_steeringPid.update(
-        0.0F, -static_cast<float>(error), dtSeconds);
-    return roundCorrection(output);
+    return g_steeringPid.update(
+        0.0F, -error, dtSeconds);
 }
 
-void applyMotorCommands(std::int16_t correction)
+void applySpeedTargets(float correctionRpm)
 {
-    const std::int16_t left = static_cast<std::int16_t>(clampValue(
-        static_cast<std::int32_t>(g_baseCommand) - correction,
-        -TB6612::kMaxCommand, TB6612::kMaxCommand));
-    const std::int16_t right = static_cast<std::int16_t>(clampValue(
-        static_cast<std::int32_t>(g_baseCommand) + correction,
-        -TB6612::kMaxCommand, TB6612::kMaxCommand));
+    const float leftTargetRpm =
+        clampValue(g_baseRpm - correctionRpm, 0.0F, 2.0F * g_baseRpm);
+    const float rightTargetRpm =
+        clampValue(g_baseRpm + correctionRpm, 0.0F, 2.0F * g_baseRpm);
 
-    g_status.correction = correction;
-    g_status.leftCommand = left;
-    g_status.rightCommand = right;
-    TB6612::setSpeeds(left, right);
+    g_status.correctionRpm = correctionRpm;
+    g_status.leftTargetRpm = leftTargetRpm;
+    g_status.rightTargetRpm = rightTargetRpm;
+    SpeedControl::setTargetRpm(leftTargetRpm, rightTargetRpm);
+}
+
+void resetOuterLoop(std::uint32_t sampleSequence)
+{
+    g_steeringPid.reset();
+    g_lastPidSequence = sampleSequence;
+}
+
+void applyStoppedTargets()
+{
+    g_status.correctionRpm = 0.0F;
+    g_status.leftTargetRpm = 0.0F;
+    g_status.rightTargetRpm = 0.0F;
+    SpeedControl::setTargetRpm(0.0F, 0.0F);
 }
 
 }  // namespace
@@ -222,16 +157,14 @@ volatile bool enabled = true;
 
 void init()
 {
-    g_baseCommand = kDefaultBaseCommand;
+    g_baseRpm = kDefaultBaseRpm;
     g_steeringPid.configure(makePidConfig(
         kDefaultKp, kDefaultKi, kDefaultKd));
-    g_candidateMask = 0;
-    g_sameMaskCount = 0;
     g_lastSequence = 0;
     g_lastPidSequence = 0;
     g_status = {};
     enabled = true;
-    TB6612::coast();
+    applySpeedTargets(0.0F);
 }
 
 void setTunings(float kp, float ki, float kd)
@@ -242,21 +175,21 @@ void setTunings(float kp, float ki, float kd)
     __enable_irq();
 }
 
-void setBaseCommand(std::int16_t command)
+void setBaseRpm(float rpm)
 {
-    g_baseCommand = static_cast<std::int16_t>(
-        clampValue(command, -TB6612::kMaxCommand, TB6612::kMaxCommand));
+    g_baseRpm = rpm > 0.0F ? rpm : 0.0F;
+    applySpeedTargets(g_status.correctionRpm);
 }
 
 void stop()
 {
     enabled = false;
-    g_steeringPid.reset();
-    g_lastPidSequence = 0;
-    g_status.correction = 0;
-    g_status.leftCommand = 0;
-    g_status.rightCommand = 0;
-    TB6612::coast();
+    resetOuterLoop(g_lastSequence);
+    g_status.error = 0.0F;
+    g_status.correctionRpm = 0.0F;
+    g_status.leftTargetRpm = 0.0F;
+    g_status.rightTargetRpm = 0.0F;
+    SpeedControl::setTargetRpm(0.0F, 0.0F);
 }
 
 void update(std::uint32_t sampleSequence)
@@ -269,32 +202,29 @@ void update(std::uint32_t sampleSequence)
     const std::uint8_t detectedMask =
         makeLineMask(GraySensor::latest().digital);
     const std::uint8_t blackSensorCount = countSetBits(detectedMask);
-    const std::uint8_t controlMask =
-        makeControlMask(detectedMask, blackSensorCount);
 
     g_status.detectedLineMask = detectedMask;
-    g_status.lineMask = controlMask;
+    g_status.lineMask = detectedMask;
     g_status.blackSensorCount = blackSensorCount;
     g_status.wideLineDetected =
         blackSensorCount >= kWideLineSensorCount;
 
     if (!enabled) {
-        g_steeringPid.reset(-static_cast<float>(g_status.error));
-        g_lastPidSequence = sampleSequence;
-        TB6612::coast();
+        resetOuterLoop(sampleSequence);
+        g_status.error = 0.0F;
+        applyStoppedTargets();
         return;
     }
 
-    /*
-     * Debounce the mask used for steering. Changes on discarded outer
-     * sensors must not delay the drive-through response on a wide line.
-     */
-    if (!maskIsStable(controlMask)) {
+    if (blackSensorCount == 0U) {
+        resetOuterLoop(sampleSequence);
+        g_status.error = 0.0F;
+        applySpeedTargets(0.0F);
         return;
     }
 
-    g_status.error = errorForMask(controlMask, g_status.error);
-    applyMotorCommands(
+    g_status.error = weightedErrorForMask(detectedMask);
+    applySpeedTargets(
         computeCorrection(g_status.error, sampleSequence));
 }
 

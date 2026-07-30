@@ -7,8 +7,8 @@ namespace {
 constexpr std::uint32_t kPwmPeriodCounts = 4000U;
 
 enum class Motor {
-    RightA,
-    LeftB,
+    LeftA,
+    RightB,
 };
 
 std::int16_t clampCommand(std::int16_t command)
@@ -38,8 +38,8 @@ std::uint32_t compareForMagnitude(std::uint16_t magnitude)
 void writePwm(Motor motor, std::uint16_t magnitude)
 {
     const DL_TIMER_CC_INDEX channel =
-        (motor == Motor::RightA) ? GPIO_MOTOR_PWM_C1_IDX
-                                 : GPIO_MOTOR_PWM_C0_IDX;
+        (motor == Motor::LeftA) ? GPIO_MOTOR_PWM_C1_IDX
+                                : GPIO_MOTOR_PWM_C0_IDX;
 
     DL_Timer_setCaptureCompareValue(
         MOTOR_PWM_INST, compareForMagnitude(magnitude), channel);
@@ -47,21 +47,21 @@ void writePwm(Motor motor, std::uint16_t magnitude)
 
 void setDirection(Motor motor, bool forward)
 {
-    if (motor == Motor::RightA) {
+    if (motor == Motor::LeftA) {
         if (forward) {
-            DL_GPIO_clearPins(TB6612_PORT, TB6612_AIN1_PIN);
-            DL_GPIO_setPins(TB6612_PORT, TB6612_AIN2_PIN);
-        } else {
             DL_GPIO_setPins(TB6612_PORT, TB6612_AIN1_PIN);
             DL_GPIO_clearPins(TB6612_PORT, TB6612_AIN2_PIN);
+        } else {
+            DL_GPIO_clearPins(TB6612_PORT, TB6612_AIN1_PIN);
+            DL_GPIO_setPins(TB6612_PORT, TB6612_AIN2_PIN);
         }
     } else {
         if (forward) {
-            DL_GPIO_clearPins(TB6612_PORT, TB6612_BIN1_PIN);
-            DL_GPIO_setPins(TB6612_PORT, TB6612_BIN2_PIN);
-        } else {
             DL_GPIO_setPins(TB6612_PORT, TB6612_BIN1_PIN);
             DL_GPIO_clearPins(TB6612_PORT, TB6612_BIN2_PIN);
+        } else {
+            DL_GPIO_clearPins(TB6612_PORT, TB6612_BIN1_PIN);
+            DL_GPIO_setPins(TB6612_PORT, TB6612_BIN2_PIN);
         }
     }
 }
@@ -70,7 +70,7 @@ void coastMotor(Motor motor)
 {
     writePwm(motor, 0U);
 
-    if (motor == Motor::RightA) {
+    if (motor == Motor::LeftA) {
         DL_GPIO_clearPins(
             TB6612_PORT, TB6612_AIN1_PIN | TB6612_AIN2_PIN);
     } else {
@@ -107,12 +107,12 @@ void init()
 
 void setRight(std::int16_t command)
 {
-    setMotor(Motor::RightA, command);
+    setMotor(Motor::RightB, command);
 }
 
 void setLeft(std::int16_t command)
 {
-    setMotor(Motor::LeftB, command);
+    setMotor(Motor::LeftA, command);
 }
 
 void setSpeeds(std::int16_t leftCommand, std::int16_t rightCommand)
@@ -123,20 +123,20 @@ void setSpeeds(std::int16_t leftCommand, std::int16_t rightCommand)
 
 void coast()
 {
-    coastMotor(Motor::RightA);
-    coastMotor(Motor::LeftB);
+    coastMotor(Motor::LeftA);
+    coastMotor(Motor::RightB);
 }
 
 void brake()
 {
     // Disable drive before changing all four bridge inputs.
-    writePwm(Motor::RightA, 0U);
-    writePwm(Motor::LeftB, 0U);
+    writePwm(Motor::LeftA, 0U);
+    writePwm(Motor::RightB, 0U);
     DL_GPIO_setPins(TB6612_PORT,
                     TB6612_AIN1_PIN | TB6612_AIN2_PIN |
                         TB6612_BIN1_PIN | TB6612_BIN2_PIN);
-    writePwm(Motor::RightA, kMaxCommand);
-    writePwm(Motor::LeftB, kMaxCommand);
+    writePwm(Motor::LeftA, kMaxCommand);
+    writePwm(Motor::RightB, kMaxCommand);
 }
 
 }  // namespace TB6612

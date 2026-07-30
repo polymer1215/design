@@ -6,8 +6,8 @@
 namespace {
 
 constexpr std::uint32_t kEncoderPins =
-    ENCODER_E1A_RIGHT_PIN | ENCODER_E1B_RIGHT_PIN |
-    ENCODER_E2A_LEFT_PIN | ENCODER_E2B_LEFT_PIN;
+    ENCODER_E1A_LEFT_PIN | ENCODER_E1B_LEFT_PIN |
+    ENCODER_E2A_RIGHT_PIN | ENCODER_E2B_RIGHT_PIN;
 
 /*
  * Quadrature transition table indexed by (previousAB << 2) | currentAB.
@@ -38,15 +38,15 @@ std::uint8_t g_previousLeftState = 0;
 std::uint8_t readRightState(std::uint32_t pins)
 {
     return static_cast<std::uint8_t>(
-        ((pins & ENCODER_E1A_RIGHT_PIN) ? 2U : 0U) |
-        ((pins & ENCODER_E1B_RIGHT_PIN) ? 1U : 0U));
+        ((pins & ENCODER_E2A_RIGHT_PIN) ? 2U : 0U) |
+        ((pins & ENCODER_E2B_RIGHT_PIN) ? 1U : 0U));
 }
 
 std::uint8_t readLeftState(std::uint32_t pins)
 {
     return static_cast<std::uint8_t>(
-        ((pins & ENCODER_E2A_LEFT_PIN) ? 2U : 0U) |
-        ((pins & ENCODER_E2B_LEFT_PIN) ? 1U : 0U));
+        ((pins & ENCODER_E1A_LEFT_PIN) ? 2U : 0U) |
+        ((pins & ENCODER_E1B_LEFT_PIN) ? 1U : 0U));
 }
 
 void updateRight(std::uint32_t pins)
@@ -73,26 +73,26 @@ void handleEncoderInterrupt()
         DL_GPIO_getEnabledInterruptStatus(ENCODER_PORT, kEncoderPins);
     const std::uint32_t pins = DL_GPIO_readPins(ENCODER_PORT, kEncoderPins);
 
-    if (status & ENCODER_E1A_RIGHT_PIN) {
-        ++g_rightAEdges;
-    }
-    if (status & ENCODER_E1B_RIGHT_PIN) {
-        ++g_rightBEdges;
-    }
-    if (status & ENCODER_E2A_LEFT_PIN) {
+    if (status & ENCODER_E1A_LEFT_PIN) {
         ++g_leftAEdges;
     }
-    if (status & ENCODER_E2B_LEFT_PIN) {
+    if (status & ENCODER_E1B_LEFT_PIN) {
         ++g_leftBEdges;
+    }
+    if (status & ENCODER_E2A_RIGHT_PIN) {
+        ++g_rightAEdges;
+    }
+    if (status & ENCODER_E2B_RIGHT_PIN) {
+        ++g_rightBEdges;
     }
 
     if (status &
-        (ENCODER_E1A_RIGHT_PIN | ENCODER_E1B_RIGHT_PIN)) {
-        updateRight(pins);
+        (ENCODER_E1A_LEFT_PIN | ENCODER_E1B_LEFT_PIN)) {
+        updateLeft(pins);
     }
     if (status &
-        (ENCODER_E2A_LEFT_PIN | ENCODER_E2B_LEFT_PIN)) {
-        updateLeft(pins);
+        (ENCODER_E2A_RIGHT_PIN | ENCODER_E2B_RIGHT_PIN)) {
+        updateRight(pins);
     }
 
     DL_GPIO_clearInterruptStatus(ENCODER_PORT, status);
