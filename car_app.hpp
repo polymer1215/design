@@ -5,6 +5,7 @@ namespace CarApp {
 
 enum class AppMode {
     K230StepperDebug,
+    K230TwoStage,
     LineTracking,
 };
 

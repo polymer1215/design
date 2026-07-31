@@ -16,6 +16,7 @@ const GPIO1  = GPIO.addInstance();
 const GPIO2  = GPIO.addInstance();
 const GPIO3  = GPIO.addInstance();
 const GPIO4  = GPIO.addInstance();
+const GPIO5  = GPIO.addInstance();
 const PWM    = scripting.addModule("/ti/driverlib/PWM", {}, false);
 const PWM1   = PWM.addInstance();
 const I2C    = scripting.addModule("/ti/driverlib/I2C", {}, false);
@@ -154,6 +155,22 @@ GPIO4.associatedPins[1].pin.$assign  = "PA8";
 GPIO4.associatedPins[2].$name        = "EN1";
 GPIO4.associatedPins[2].initialValue = "CLEARED";
 GPIO4.associatedPins[2].pin.$assign  = "PA9";
+
+/*
+ * Active-low mode-selection buttons. PB21 is the Tianmengxing onboard
+ * button. Connect the external user_button between PB20 and GND; both
+ * inputs use the MSPM0 internal pull-up.
+ */
+GPIO5.$name                                  = "BUTTONS";
+GPIO5.associatedPins.create(2);
+GPIO5.associatedPins[0].$name                = "B21_BUTTON";
+GPIO5.associatedPins[0].direction            = "INPUT";
+GPIO5.associatedPins[0].internalResistor     = "PULL_UP";
+GPIO5.associatedPins[0].pin.$assign          = "PB21";
+GPIO5.associatedPins[1].$name                = "USER_BUTTON";
+GPIO5.associatedPins[1].direction            = "INPUT";
+GPIO5.associatedPins[1].internalResistor     = "PULL_UP";
+GPIO5.associatedPins[1].pin.$assign          = "PB20";
 
 PWM1.$name                      = "MOTOR_PWM";
 PWM1.clockSource                = "BUSCLK";

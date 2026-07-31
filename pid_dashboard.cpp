@@ -15,6 +15,8 @@ std::uint32_t g_displayedSequence = 0U;
 PidDashboard::View g_view = PidDashboard::View::K230Monitor;
 K230Protocol::BallPosition g_ballPosition = {};
 bool g_hasBallFrame = false;
+std::uint8_t g_b21PressCount = 0U;
+std::uint32_t g_lineTrackingStartSequence = 0U;
 
 void formatSigned(char *output, std::int32_t value, std::uint8_t digits)
 {
@@ -164,6 +166,57 @@ void showK230Monitor()
     OLED_Refresh();
 }
 
+void showModeSelection()
+{
+    char countLine[13] = "B21 COUNT:00";
+    formatUnsigned(&countLine[10], g_b21PressCount, 2U);
+    countLine[12] = '\0';
+
+    const char *modeLine = "PRESS B21";
+    if (g_b21PressCount != 0U) {
+        const std::uint8_t modeNumber = static_cast<std::uint8_t>(
+            ((g_b21PressCount - 1U) % 3U) + 1U);
+        if (modeNumber == 1U) {
+            modeLine = "1:LINE TRACK";
+        } else if (modeNumber == 2U) {
+            modeLine = "2:500 TO 227";
+        } else {
+            modeLine = "3:TRACK+STEP";
+        }
+    }
+
+    OLED_Clear();
+    OLED_ShowString(
+        0, 0, reinterpret_cast<const u8 *>("SELECT MODE"), 16, 1);
+    OLED_ShowString(
+        0, 16, reinterpret_cast<const u8 *>(countLine), 16, 1);
+    OLED_ShowString(
+        0, 32, reinterpret_cast<const u8 *>(modeLine), 16, 1);
+    OLED_ShowString(
+        0, 48, reinterpret_cast<const u8 *>("USER:CONFIRM"), 16, 1);
+    OLED_Refresh();
+}
+
+void showLineTrackingRuntime(std::uint32_t sampleSequence)
+{
+    const std::uint32_t elapsedSamples =
+        sampleSequence - g_lineTrackingStartSequence;
+    const std::uint32_t elapsedTenths =
+        elapsedSamples * 10U / Encoder::kSampleRateHz;
+    char timeLine[13] = "TIME:0000.0s";
+    formatUnsigned(&timeLine[5], (elapsedTenths / 10U) % 10000U, 4U);
+    timeLine[10] = static_cast<char>('0' + (elapsedTenths % 10U));
+
+    OLED_Clear();
+    OLED_ShowString(
+        0, 0, reinterpret_cast<const u8 *>("MODE 1 RUN"), 16, 1);
+    OLED_ShowString(
+        0, 16, reinterpret_cast<const u8 *>("LINE TRACKING"), 16, 1);
+    OLED_ShowString(
+        0, 32, reinterpret_cast<const u8 *>(timeLine), 16, 1);
+    OLED_Refresh();
+}
+
 }  // namespace
 
 namespace PidDashboard {
@@ -177,6 +230,8 @@ void init()
     g_view = View::K230Monitor;
     g_ballPosition = {};
     g_hasBallFrame = false;
+    g_b21PressCount = 0U;
+    g_lineTrackingStartSequence = 0U;
 }
 
 void setView(View view)
@@ -196,6 +251,18 @@ void setBallPosition(const K230Protocol::BallPosition &position)
     g_hasBallFrame = true;
 }
 
+void setModeSelection(std::uint8_t b21PressCount)
+{
+    g_b21PressCount = b21PressCount;
+    g_displayedSequence = 0U;
+}
+
+void startLineTrackingRuntime(std::uint32_t sampleSequence)
+{
+    g_lineTrackingStartSequence = sampleSequence;
+    setView(View::LineTrackingRuntime);
+}
+
 void update(std::uint32_t sampleSequence)
 {
     if (!OLED_IsConnected() ||
@@ -208,6 +275,12 @@ void update(std::uint32_t sampleSequence)
     switch (g_view) {
         case View::K230Monitor:
             showK230Monitor();
+            break;
+        case View::ModeSelection:
+            showModeSelection();
+            break;
+        case View::LineTrackingRuntime:
+            showLineTrackingRuntime(sampleSequence);
             break;
         case View::SpeedControl:
             showSpeedControl(SpeedControl::latest());

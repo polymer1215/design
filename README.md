@@ -128,16 +128,34 @@ The encoder SysTick ISR supplies the common 100 Hz refresh timebase and runs
 the wheel-speed update, whose output remains disabled outside line-tracking
 mode.
 
-Startup selects `CarApp::AppMode::K230StepperDebug`. This mode keeps both wheel
-motors stopped, monitors K230 data on the OLED, immediately enables the D36A,
-and defines the manually centered mechanism as zero. It holds at zero without
-STEP pulses until the first valid K230 ball coordinate arrives, then runs the
-stepper position PID.
+Startup first keeps every motor stopped and displays the K230 monitor. The
+first valid `BALL,x` or `BALL,-1` frame confirms the link and opens the mode
+menu. The displayed PB21 press count selects modes cyclically: counts 1/4/7
+select mode 1, 2/5/8 select mode 2, and 3/6/9 select mode 3. Press the external
+`user_button` to start. Mode 1 runs line tracking, stops consuming K230 data,
+keeps the stepper driver disabled, and shows its elapsed running time on the
+OLED. Mode 2 initially targets K230 coordinate 500 but switches once to 227 as
+soon as the ball reaches or passes X=450. Mode 3 runs line tracking and the
+fixed-target K230/stepper controller at X=345 concurrently.
 `CarApp::selectMode(CarApp::AppMode::LineTracking)` starts the existing
 gray-sensor and cascaded wheel-control path. Selecting the debug mode again
 safely stops the wheels before re-enabling the D36A, but it does not restart
-or redefine the software zero. A future button handler can call the same API;
-this project does not assign a button GPIO yet.
+or redefine the software zero. The mode-selection state machine calls the
+same API after confirmation.
+
+### Mode-selection buttons
+
+Both buttons are active low and use internal pull-ups. The firmware applies a
+30 ms software debounce and produces one event per physical press.
+
+| Button | MSPM0G3507 pin | Wiring |
+| --- | --- | --- |
+| Tianmengxing onboard button | PB21 | Already connected on the board |
+| `user_button` | PB20 | Momentary normally-open switch from PB20 to GND |
+
+Do not apply 5 V to PB20. No external resistor is required; for long/noisy
+wiring, an optional 100 nF capacitor may be placed from PB20 to GND near the
+MCU board.
 
 ## Yahboom K230 UART Link
 
@@ -149,8 +167,8 @@ The MSPM0 stream parser accepts `BALL,x\r\n`, validates X against the
 640-pixel AI-frame width, and shows `K230 BALL` and `X` on the OLED.
 `BALL,-1\r\n` displays `K230 NO BALL` with `X:---`.
 Invalid, partial, and overlong lines do not update the displayed position.
-In the default debug mode the OLED stays on the K230 monitor page instead of
-rotating through motor or gray-sensor pages. `K230 WAIT` with `RX:000000`
+During the startup link check the OLED stays on the K230 monitor page instead
+of rotating through motor or gray-sensor pages. `K230 WAIT` with `RX:000000`
 means UART2 has not received any byte. `K230 RAW` means bytes are arriving,
 but no complete valid `BALL,x` line has been decoded. The bottom line shows
 the UART ring-buffer drop count and the D36A enable state.
@@ -194,11 +212,14 @@ previous echo never delays the next coordinate transmission.
 
 ## K230 Ball-position PID
 
-The default mode enables a positional PID with `X=345` as its setpoint only
-after the first valid `BALL,x` frame arrives. Each new valid frame updates an
-absolute stepper target within the +/-30-degree software limits. Before that
-first frame, STEP remains low and the enabled driver holds the manually
-centered zero position.
+Modes 2 and 3 enable the positional PID only after the first valid `BALL,x`
+frame arrives. Mode 2 starts with target `X=500`; the first detected coordinate
+at or beyond `X=450` switches the target permanently to `X=227` for the
+remainder of that run. Mode 3 keeps the fixed `X=345` target while the wheel
+motors simultaneously execute line tracking. Each new valid frame updates an
+absolute stepper target within the +/-30-degree software limits.
+Before the first frame, STEP remains low and the enabled driver holds the
+manually centered zero position.
 
 The controller calculates `errorPixels = targetX - measuredX`. Ball velocity
 uses the displacement from the immediately preceding valid frame. A frame is
@@ -210,18 +231,18 @@ control law is `Kp * errorPixels + Ki * integral(errorPixels) - Kd *
 ballVelocity`. There is no static-friction compensation or stationary/moving
 state switch.
 
-| Parameter | Initial value |
-| --- | ---: |
-| Kp | 1.125 pulse/pixel |
-| Ki | 0.112 pulse/(pixel second) |
-| Kd | 0.60 pulse/(pixel/second) |
-| Coordinate deadband | +/-20 pixels |
-| Per-frame motion threshold | greater than 4 pixels |
-| Velocity filter time constant | 0.10 seconds |
-| Velocity output deadband | 8 pixels/second |
-| STEP frequency | 1200 pulse/s |
-| Output limit | +/-30 degrees / +/-267 pulses |
-| Frame timeout | 0.30 seconds |
+| Parameter | Mode 2 | Mode 3 |
+| --- | ---: | ---: |
+| Kp | 0.80 | 0.70 |
+| Ki | 0.080 | 0.070 |
+| Kd | 0.60 | 0.60 |
+| Coordinate deadband | +/-25 pixels | +/-20 pixels |
+| Per-frame motion threshold | greater than 3 pixels | greater than 3 pixels |
+| Velocity filter time constant | 0.10 seconds | 0.10 seconds |
+| Velocity output deadband | 8 pixels/second | 8 pixels/second |
+| STEP frequency | 1200 pulse/s | 1200 pulse/s |
+| Output limit | +/-30 degrees / +/-267 pulses | +/-30 degrees / +/-267 pulses |
+| Frame timeout | 0.30 seconds | 0.30 seconds |
 
 `BALL,-1` or 0.30 seconds without a valid frame stops the STEP train and resets
 the PID state while the enabled driver holds its current commanded position.
@@ -230,7 +251,7 @@ absolute commanded motor position, not measured shaft-angle feedback.
 
 The confirmed direction mapping uses `kBalanceMotorPolarity = -1` in
 `car_app.cpp`. If increasing motor angle makes the ball move farther away from
-X=345, invert this value before tuning any gains. Verify the sign with small
+the active target, invert this value before tuning any gains. Verify the sign with small
 motions first; a reversed control direction cannot stabilize the ball.
 
 ## Ganwei Eight-channel Grayscale Sensor
@@ -348,11 +369,11 @@ distance sensor. Ball balancing uses the K230 X coordinate as its feedback and
 the commanded pulse position as an open-loop mechanism estimate.
 The mechanism must be placed manually at its center before every power-up.
 
-After boot, the default debug mode immediately enables the driver and defines
-the manually centered position as zero. The driver remains enabled to provide
-holding torque, but no STEP pulse is generated until a fresh detected-ball
-frame starts the K230 position PID. Re-entering the mode later does not
-redefine the original software zero.
+After the K230 check and menu confirmation, modes 2 and 3 enable the driver
+and define the manually centered position as zero. The driver remains enabled to
+provide holding torque, but no STEP pulse is generated until a fresh
+detected-ball frame starts the K230 position PID. Re-entering the mode later
+does not redefine the original software zero.
 
 Before connecting the linkage, verify PA7 with a logic analyzer, test at low
 frequency with the mechanism unloaded, check motor phase wiring and D36A
