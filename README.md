@@ -130,8 +130,9 @@ mode.
 
 Startup selects `CarApp::AppMode::K230StepperDebug`. This mode keeps both wheel
 motors stopped, monitors K230 data on the OLED, immediately enables the D36A,
-and defines the manually centered mechanism as zero. It holds at zero until a
-valid K230 ball coordinate arrives, then runs the stepper position PID.
+and defines the manually centered mechanism as zero. It holds at zero without
+STEP pulses until the first valid K230 ball coordinate arrives, then runs the
+stepper position PID.
 `CarApp::selectMode(CarApp::AppMode::LineTracking)` starts the existing
 gray-sensor and cascaded wheel-control path. Selecting the debug mode again
 safely stops the wheels before re-enabling the D36A, but it does not restart
@@ -193,48 +194,44 @@ previous echo never delays the next coordinate transmission.
 
 ## K230 Ball-position PID
 
-The default mode starts a one-shot ball-position sequence when the first valid
-`BALL,x` frame arrives. It first drives the ball toward `X=465`. Reaching or
-crossing the `465 +/- 3` arrival window immediately changes the setpoint to
-`X=227`; the controller then keeps `X=227` as its permanent holding target.
-Re-entering the K230 stepper mode restarts this sequence.
+The default mode enables a positional PID with `X=345` as its setpoint only
+after the first valid `BALL,x` frame arrives. Each new valid frame updates an
+absolute stepper target within the +/-30-degree software limits. Before that
+first frame, STEP remains low and the enabled driver holds the manually
+centered zero position.
 
-Each new frame updates an absolute stepper target within the +/-30-degree
-software limits. A separate 100 Hz online trajectory loop converts that
-target-position error into step speed and applies an acceleration limit. This
-keeps motion continuous between the K230's approximately 55--60 FPS coordinate
-updates and avoids instantaneous starts and reversals. The PID history is
-reset at the 465-to-227 transition so the outbound integral and derivative
-state do not oppose the return movement.
+The controller calculates `errorPixels = targetX - measuredX`. Ball velocity
+uses the displacement from the immediately preceding valid frame. A frame is
+treated as real motion only when its displacement is greater than 4 pixels;
+otherwise its raw velocity is zero. The result passes through a 100 ms
+first-order low-pass filter, and filtered speed below 8 pixels/second is not
+sent to the D term. The
+control law is `Kp * errorPixels + Ki * integral(errorPixels) - Kd *
+ballVelocity`. There is no static-friction compensation or stationary/moving
+state switch.
 
-| Parameter | Current value |
+| Parameter | Initial value |
 | --- | ---: |
-| Kp | 0.80 pulse/pixel |
-| Ki | 0.20 pulse/(pixel second) |
-| Kd | 0.10 pulse/(pixel/second) |
-| Coordinate deadband | +/-3 pixels |
-| Maximum STEP speed | 2500 pulse/s |
-| Maximum STEP acceleration | 40000 pulse/s^2 |
-| Trajectory position gain | 20 (pulse/s)/pulse |
+| Kp | 1.125 pulse/pixel |
+| Ki | 0.112 pulse/(pixel second) |
+| Kd | 0.60 pulse/(pixel/second) |
+| Coordinate deadband | +/-20 pixels |
+| Per-frame motion threshold | greater than 4 pixels |
+| Velocity filter time constant | 0.10 seconds |
+| Velocity output deadband | 8 pixels/second |
+| STEP frequency | 1200 pulse/s |
+| Output limit | +/-30 degrees / +/-267 pulses |
 | Frame timeout | 0.30 seconds |
 
-At the configured acceleration, a start from rest reaches 2500 pulse/s in
-62.5 ms, while a full +2500 to -2500 pulse/s reversal takes at least 125 ms.
-Lower `kMaximumStepAccelerationPps2` for softer motion, or raise it if the
-mechanism becomes too sluggish. `kMaximumStepSpeedPps` independently limits
-the highest speed, and `kTrajectoryPositionGain` determines how strongly the
-trajectory loop converts remaining position error into speed.
+`BALL,-1` or 0.30 seconds without a valid frame stops the STEP train and resets
+the PID state while the enabled driver holds its current commanded position.
+The PID resumes from a reset state on the next valid frame. The output is an
+absolute commanded motor position, not measured shaft-angle feedback.
 
-`BALL,-1` or 0.30 seconds without a valid frame immediately stops the STEP
-train, resets the PID state, and keeps the driver enabled so the mechanism
-holds its current commanded position. The PID resumes from a reset state on
-the next valid frame. The output is an absolute commanded motor position, not
-measured shaft-angle feedback.
-
-The observed mechanism direction is encoded as
-`kBalanceMotorPolarity = -1` in `car_app.cpp`: positive motor rotation makes
-the ball X coordinate decrease. The same polarity is used for both the
-outbound target and the final holding target.
+The confirmed direction mapping uses `kBalanceMotorPolarity = -1` in
+`car_app.cpp`. If increasing motor angle makes the ball move farther away from
+X=345, invert this value before tuning any gains. Verify the sign with small
+motions first; a reversed control direction cannot stabilize the ball.
 
 ## Ganwei Eight-channel Grayscale Sensor
 
@@ -351,21 +348,15 @@ distance sensor. Ball balancing uses the K230 X coordinate as its feedback and
 the commanded pulse position as an open-loop mechanism estimate.
 The mechanism must be placed manually at its center before every power-up.
 
-After boot, the default mode immediately enables the driver, defines the
-manually centered position as zero, and holds there without generating STEP
-pulses. No automatic sweep is performed. The first fresh detected-ball frame
-starts PID control. Re-entering the mode later keeps the original software zero
-and does not reinterpret the current position.
-
-The +/-30-degree range is enforced relative to that startup zero at three
-levels: absolute commands are rejected outside +/-267 pulses, relative
-commands are rejected when their destination would cross the range, and the
-STEP interrupt checks the next pulse position before every rising edge. This
-also prevents continuous-speed commands from crossing the structural limit.
+After boot, the default debug mode immediately enables the driver and defines
+the manually centered position as zero. The driver remains enabled to provide
+holding torque, but no STEP pulse is generated until a fresh detected-ball
+frame starts the K230 position PID. Re-entering the mode later does not
+redefine the original software zero.
 
 Before connecting the linkage, verify PA7 with a logic analyzer, test at low
 frequency with the mechanism unloaded, check motor phase wiring and D36A
 current/microstep settings, and confirm that positive motion matches the
 chosen balance-rod direction. The current driver has software pulse-count
-limits and the balance controller has an online acceleration ramp, but there
-is no physical limit-switch input, stall detection, or fault input.
+limits but no acceleration ramp, physical limit-switch input, stall detection,
+or fault input.

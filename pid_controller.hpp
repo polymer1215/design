@@ -55,6 +55,14 @@ public:
     void reset(float measurement);
 
     float update(float setpoint, float measurement, float dtSeconds);
+    // Uses an externally calculated measurement rate. The derivative term is
+    // -kd * measurementRate, which avoids derivative kick from setpoint
+    // changes and allows the caller to filter a noisy sensor velocity.
+    float updateWithMeasurementRate(
+        float setpoint,
+        float measurement,
+        float measurementRate,
+        float dtSeconds);
 
     const PidConfig &configuration() const;
     const PidTerms &latest() const;
@@ -66,6 +74,12 @@ private:
     float previousError_;
     float previousMeasurement_;
     bool initialized_;
+
+    float updateWithDerivativeRate(
+        float setpoint,
+        float measurement,
+        float derivativeRate,
+        float dtSeconds);
 };
 
 }  // namespace Control

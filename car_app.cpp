@@ -17,28 +17,21 @@ namespace {
 
 AppMode g_currentMode = AppMode::K230StepperDebug;
 bool g_modeActive = false;
-constexpr std::int16_t kOutboundBallTargetX = 450;
-constexpr std::int16_t kHoldingBallTargetX = 227;
-constexpr std::int16_t kBallDeadbandPixels = 6;
+constexpr std::int16_t kBallTargetX = 345;
+constexpr std::int16_t kBallDeadbandPixels = 20;
 constexpr std::uint32_t kBallFrameTimeoutSamples =
     Encoder::kSampleRateHz * 3U / 10U;
-constexpr float kMaximumStepSpeedPps = 2500.0F;
-constexpr float kMaximumStepAccelerationPps2 = 40000.0F;
-constexpr float kTrajectoryPositionGain = 20.0F;
-// Positive motor angle makes X decrease on the assembled mechanism.
+constexpr float kBallVelocityFilterTimeConstantSeconds = 0.10F;
+constexpr float kBallVelocityMinimumDisplacementPixels = 3.0F;
+constexpr float kBallVelocityOutputDeadbandPixelsPerSecond = 8.0F;
+constexpr std::uint32_t kBalanceStepFrequencyHz = 1200U;
+// Invert if positive motor angle makes the ball move away from X=345.
 constexpr std::int32_t kBalanceMotorPolarity = -1;
-constexpr float kBalanceKp = 0.444F;
-constexpr float kBalanceKi = 0.005F;
-constexpr float kBalanceKd = 0.0F;
-
-enum class BallTargetPhase {
-    MoveToOutboundTarget,
-    ReturnAndHold,
-};
+constexpr float kBalanceKp = 0.7F;
+constexpr float kBalanceKi = 0.07F;
+constexpr float kBalanceKd = 0.6F;
 
 bool g_stepperZeroEstablished = false;
-BallTargetPhase g_ballTargetPhase =
-    BallTargetPhase::MoveToOutboundTarget;
 Control::PidController g_ballPid({
     kBalanceKp,
     kBalanceKi,
@@ -55,33 +48,19 @@ bool g_ballPidActive = false;
 std::uint32_t g_lastBallFrameSampleSequence = 0U;
 std::uint32_t g_lastControlledBallSequence = 0U;
 std::uint32_t g_lastBalanceUpdateSampleSequence = 0U;
-std::uint32_t g_lastTrajectorySampleSequence = 0U;
-std::int32_t g_balanceTargetPulses = 0;
-float g_balanceVelocityPps = 0.0F;
-
-std::int16_t currentBallTargetX()
-{
-    return g_ballTargetPhase ==
-            BallTargetPhase::MoveToOutboundTarget
-        ? kOutboundBallTargetX
-        : kHoldingBallTargetX;
-}
-
-float clampValue(float value, float minimum, float maximum)
-{
-    if (value > maximum) {
-        return maximum;
-    }
-    if (value < minimum) {
-        return minimum;
-    }
-    return value;
-}
+float g_previousBallX = 0.0F;
+float g_filteredBallVelocityPixelsPerSecond = 0.0F;
+bool g_ballVelocityInitialized = false;
 
 std::int32_t roundToInt(float value)
 {
     return static_cast<std::int32_t>(
         value >= 0.0F ? value + 0.5F : value - 0.5F);
+}
+
+float absoluteValue(float value)
+{
+    return value >= 0.0F ? value : -value;
 }
 
 void resetBallBalance()
@@ -93,9 +72,9 @@ void resetBallBalance()
     g_ballPidActive = false;
     g_lastControlledBallSequence = 0U;
     g_lastBalanceUpdateSampleSequence = 0U;
-    g_lastTrajectorySampleSequence = 0U;
-    g_balanceTargetPulses = Stepper::positionPulses();
-    g_balanceVelocityPps = 0.0F;
+    g_previousBallX = 0.0F;
+    g_filteredBallVelocityPixelsPerSecond = 0.0F;
+    g_ballVelocityInitialized = false;
 }
 
 void serviceK230Link(std::uint32_t sampleSequence)
@@ -117,66 +96,6 @@ void serviceK230Link(std::uint32_t sampleSequence)
     }
 }
 
-void updateBallTrajectory(std::uint32_t sampleSequence)
-{
-    if (!g_ballPidActive ||
-        sampleSequence == g_lastTrajectorySampleSequence) {
-        return;
-    }
-
-    std::uint32_t elapsedSamples =
-        sampleSequence - g_lastTrajectorySampleSequence;
-    constexpr std::uint32_t kMaximumElapsedSamples = 5U;
-    if (elapsedSamples > kMaximumElapsedSamples) {
-        elapsedSamples = kMaximumElapsedSamples;
-    }
-    g_lastTrajectorySampleSequence = sampleSequence;
-
-    const float dtSeconds =
-        static_cast<float>(elapsedSamples) /
-        static_cast<float>(Encoder::kSampleRateHz);
-    const std::int32_t positionError =
-        g_balanceTargetPulses - Stepper::positionPulses();
-    const float desiredVelocity = clampValue(
-        kTrajectoryPositionGain *
-            static_cast<float>(positionError),
-        -kMaximumStepSpeedPps,
-        kMaximumStepSpeedPps);
-    const float maximumVelocityChange =
-        kMaximumStepAccelerationPps2 * dtSeconds;
-    const float velocityChange = clampValue(
-        desiredVelocity - g_balanceVelocityPps,
-        -maximumVelocityChange,
-        maximumVelocityChange);
-    g_balanceVelocityPps = clampValue(
-        g_balanceVelocityPps + velocityChange,
-        -kMaximumStepSpeedPps,
-        kMaximumStepSpeedPps);
-
-    if (positionError == 0 &&
-        g_balanceVelocityPps == 0.0F) {
-        Stepper::stop();
-        return;
-    }
-
-    std::int32_t signedFrequency =
-        roundToInt(g_balanceVelocityPps);
-    const std::int32_t minimumFrequency =
-        static_cast<std::int32_t>(
-            Stepper::kMinimumStepFrequencyHz);
-    if (signedFrequency > 0 &&
-        signedFrequency < minimumFrequency) {
-        signedFrequency = minimumFrequency;
-    } else if (signedFrequency < 0 &&
-        signedFrequency > -minimumFrequency) {
-        signedFrequency = -minimumFrequency;
-    }
-
-    if (!Stepper::setVelocity(signedFrequency)) {
-        resetBallBalance();
-    }
-}
-
 void updateBallBalance(std::uint32_t sampleSequence)
 {
     const bool frameFresh =
@@ -188,77 +107,85 @@ void updateBallBalance(std::uint32_t sampleSequence)
         return;
     }
 
-    if (g_latestBallPosition.sequence !=
+    if (g_latestBallPosition.sequence ==
         g_lastControlledBallSequence) {
-        float measurement =
-            static_cast<float>(g_latestBallPosition.x);
-        bool targetSwitched = false;
-        if (g_ballTargetPhase ==
-                BallTargetPhase::MoveToOutboundTarget &&
-            g_latestBallPosition.x >=
-                kOutboundBallTargetX -
-                    kBallDeadbandPixels) {
-            g_ballTargetPhase =
-                BallTargetPhase::ReturnAndHold;
-            targetSwitched = true;
-        }
-
-        const std::int16_t targetX = currentBallTargetX();
-        const std::int16_t error =
-            static_cast<std::int16_t>(
-                targetX - g_latestBallPosition.x);
-        if (error >= -kBallDeadbandPixels &&
-            error <= kBallDeadbandPixels) {
-            measurement = static_cast<float>(targetX);
-        }
-
-        float dtSeconds = 1.0F /
-            static_cast<float>(Encoder::kSampleRateHz);
-        if (g_ballPidActive) {
-            std::uint32_t elapsedSamples =
-                g_lastBallFrameSampleSequence -
-                g_lastBalanceUpdateSampleSequence;
-            if (elapsedSamples == 0U) {
-                elapsedSamples = 1U;
-            } else if (elapsedSamples >
-                kBallFrameTimeoutSamples) {
-                elapsedSamples = kBallFrameTimeoutSamples;
-            }
-            dtSeconds = static_cast<float>(elapsedSamples) /
-                static_cast<float>(Encoder::kSampleRateHz);
-        } else {
-            g_ballPid.reset(measurement);
-            g_ballPidActive = true;
-            g_balanceVelocityPps = 0.0F;
-            g_lastTrajectorySampleSequence = sampleSequence;
-        }
-        if (targetSwitched && g_ballPidActive) {
-            g_ballPid.reset(measurement);
-        }
-
-        const float pidOutput = g_ballPid.update(
-            static_cast<float>(targetX),
-            measurement,
-            dtSeconds);
-        g_balanceTargetPulses =
-            kBalanceMotorPolarity * roundToInt(pidOutput);
-        if (g_balanceTargetPulses >
-            Stepper::kTravelLimitPulses) {
-            g_balanceTargetPulses =
-                Stepper::kTravelLimitPulses;
-        } else if (g_balanceTargetPulses <
-            -Stepper::kTravelLimitPulses) {
-            g_balanceTargetPulses =
-                -Stepper::kTravelLimitPulses;
-        }
-
-        g_lastControlledBallSequence =
-            g_latestBallPosition.sequence;
-        g_lastBalanceUpdateSampleSequence =
-            g_lastBallFrameSampleSequence;
+        return;
     }
 
-    updateBallTrajectory(sampleSequence);
+    const float rawMeasurement =
+        static_cast<float>(g_latestBallPosition.x);
+    float proportionalMeasurement = rawMeasurement;
+    const std::int16_t error =
+        static_cast<std::int16_t>(
+            kBallTargetX - g_latestBallPosition.x);
+    if (error >= -kBallDeadbandPixels &&
+        error <= kBallDeadbandPixels) {
+        proportionalMeasurement =
+            static_cast<float>(kBallTargetX);
+    }
+
+    float dtSeconds = 1.0F /
+        static_cast<float>(Encoder::kSampleRateHz);
+    if (g_ballPidActive) {
+        std::uint32_t elapsedSamples =
+            g_lastBallFrameSampleSequence -
+            g_lastBalanceUpdateSampleSequence;
+        if (elapsedSamples == 0U) {
+            elapsedSamples = 1U;
+        } else if (elapsedSamples > kBallFrameTimeoutSamples) {
+            elapsedSamples = kBallFrameTimeoutSamples;
+        }
+        dtSeconds = static_cast<float>(elapsedSamples) /
+            static_cast<float>(Encoder::kSampleRateHz);
+    } else {
+        g_ballPid.reset(proportionalMeasurement);
+        g_ballPidActive = true;
+    }
+
+    float rawBallVelocity = 0.0F;
+    if (g_ballVelocityInitialized) {
+        const float displacement = rawMeasurement - g_previousBallX;
+        if (absoluteValue(displacement) >
+                kBallVelocityMinimumDisplacementPixels) {
+            rawBallVelocity = displacement / dtSeconds;
+        }
+    } else {
+        g_ballVelocityInitialized = true;
+    }
+    g_previousBallX = rawMeasurement;
+    const float filterAlpha =
+        dtSeconds /
+        (kBallVelocityFilterTimeConstantSeconds + dtSeconds);
+    g_filteredBallVelocityPixelsPerSecond +=
+        filterAlpha *
+        (rawBallVelocity -
+            g_filteredBallVelocityPixelsPerSecond);
+    const float effectiveBallVelocity =
+        absoluteValue(g_filteredBallVelocityPixelsPerSecond) <
+            kBallVelocityOutputDeadbandPixelsPerSecond
+        ? 0.0F
+        : g_filteredBallVelocityPixelsPerSecond;
+
+    // u = Kp * (targetX - measuredX)
+    //     + Ki * integral(error)
+    //     - Kd * effectiveBallVelocity
+    const float pidOutput =
+        g_ballPid.updateWithMeasurementRate(
+            static_cast<float>(kBallTargetX),
+            proportionalMeasurement,
+            effectiveBallVelocity,
+            dtSeconds);
+    const std::int32_t targetPulses =
+        kBalanceMotorPolarity * roundToInt(pidOutput);
+    if (!Stepper::moveTo(targetPulses, kBalanceStepFrequencyHz)) {
+        resetBallBalance();
+        return;
+    }
+
+    g_lastControlledBallSequence =
+        g_latestBallPosition.sequence;
+    g_lastBalanceUpdateSampleSequence =
+        g_lastBallFrameSampleSequence;
 }
 
 void enterK230StepperDebug()
@@ -270,8 +197,6 @@ void enterK230StepperDebug()
 
     Stepper::stop();
     Stepper::setEnabled(true);
-    g_ballTargetPhase =
-        BallTargetPhase::MoveToOutboundTarget;
     if (!g_stepperZeroEstablished) {
         Stepper::setPositionPulses(0);
         g_stepperZeroEstablished = true;

@@ -119,6 +119,32 @@ float PidController::update(
         }
     }
 
+    return updateWithDerivativeRate(
+        setpoint, measurement, derivativeRate, dtSeconds);
+}
+
+float PidController::updateWithMeasurementRate(
+    float setpoint,
+    float measurement,
+    float measurementRate,
+    float dtSeconds)
+{
+    if (dtSeconds <= 0.0F) {
+        return terms_.output;
+    }
+
+    return updateWithDerivativeRate(
+        setpoint, measurement, -measurementRate, dtSeconds);
+}
+
+float PidController::updateWithDerivativeRate(
+    float setpoint,
+    float measurement,
+    float derivativeRate,
+    float dtSeconds)
+{
+    const float error = setpoint - measurement;
+
     const float proportional = config_.kp * error;
     const float derivative = config_.kd * derivativeRate;
     const float candidateIntegral = clampValue(
