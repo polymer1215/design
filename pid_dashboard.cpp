@@ -17,6 +17,9 @@ K230Protocol::BallPosition g_ballPosition = {};
 bool g_hasBallFrame = false;
 std::uint8_t g_b21PressCount = 0U;
 std::uint32_t g_lineTrackingStartSequence = 0U;
+std::uint32_t g_lineTrackingStopSequence = 0U;
+bool g_lineTrackingStopped = false;
+std::uint32_t g_lineTrackingDistanceMillimeters = 0U;
 
 void formatSigned(char *output, std::int32_t value, std::uint8_t digits)
 {
@@ -199,21 +202,31 @@ void showModeSelection()
 
 void showLineTrackingRuntime(std::uint32_t sampleSequence)
 {
+    const std::uint32_t endSequence = g_lineTrackingStopped
+        ? g_lineTrackingStopSequence
+        : sampleSequence;
     const std::uint32_t elapsedSamples =
-        sampleSequence - g_lineTrackingStartSequence;
+        endSequence - g_lineTrackingStartSequence;
     const std::uint32_t elapsedTenths =
         elapsedSamples * 10U / Encoder::kSampleRateHz;
-    char timeLine[13] = "TIME:0000.0s";
-    formatUnsigned(&timeLine[5], (elapsedTenths / 10U) % 10000U, 4U);
-    timeLine[10] = static_cast<char>('0' + (elapsedTenths % 10U));
+    const std::uint32_t displayedTenths =
+        elapsedTenths > 9999U ? 9999U : elapsedTenths;
+    const std::uint32_t distanceCentimeters =
+        (g_lineTrackingDistanceMillimeters + 5U) / 10U;
+    const std::uint32_t displayedCentimeters =
+        distanceCentimeters > 9999U ? 9999U : distanceCentimeters;
+    char timeLine[9] = "T:000.0s";
+    char distanceLine[9] = "D:00.00m";
+    formatUnsigned(&timeLine[2], displayedTenths / 10U, 3U);
+    timeLine[6] = static_cast<char>('0' + (displayedTenths % 10U));
+    formatUnsigned(&distanceLine[2], displayedCentimeters / 100U, 2U);
+    formatUnsigned(&distanceLine[5], displayedCentimeters % 100U, 2U);
 
     OLED_Clear();
     OLED_ShowString(
-        0, 0, reinterpret_cast<const u8 *>("MODE 1 RUN"), 16, 1);
+        16, 4, reinterpret_cast<const u8 *>(timeLine), 24, 1);
     OLED_ShowString(
-        0, 16, reinterpret_cast<const u8 *>("LINE TRACKING"), 16, 1);
-    OLED_ShowString(
-        0, 32, reinterpret_cast<const u8 *>(timeLine), 16, 1);
+        16, 36, reinterpret_cast<const u8 *>(distanceLine), 24, 1);
     OLED_Refresh();
 }
 
@@ -232,6 +245,9 @@ void init()
     g_hasBallFrame = false;
     g_b21PressCount = 0U;
     g_lineTrackingStartSequence = 0U;
+    g_lineTrackingStopSequence = 0U;
+    g_lineTrackingStopped = false;
+    g_lineTrackingDistanceMillimeters = 0U;
 }
 
 void setView(View view)
@@ -260,7 +276,22 @@ void setModeSelection(std::uint8_t b21PressCount)
 void startLineTrackingRuntime(std::uint32_t sampleSequence)
 {
     g_lineTrackingStartSequence = sampleSequence;
+    g_lineTrackingStopSequence = sampleSequence;
+    g_lineTrackingStopped = false;
+    g_lineTrackingDistanceMillimeters = 0U;
     setView(View::LineTrackingRuntime);
+}
+
+void setLineTrackingDistanceMillimeters(std::uint32_t distanceMillimeters)
+{
+    g_lineTrackingDistanceMillimeters = distanceMillimeters;
+}
+
+void stopLineTrackingRuntime(std::uint32_t sampleSequence)
+{
+    g_lineTrackingStopSequence = sampleSequence;
+    g_lineTrackingStopped = true;
+    g_displayedSequence = 0U;
 }
 
 void update(std::uint32_t sampleSequence)

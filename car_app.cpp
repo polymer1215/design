@@ -35,11 +35,29 @@ struct DebouncedButton {
 };
 DebouncedButton g_b21Button = {};
 DebouncedButton g_userButton = {};
-constexpr std::int16_t kMode3BallTargetX = 345;
+bool g_mode1Stopped = false;
+constexpr std::uint32_t kMode1StopDistanceMillimeters = 5940U;
+// Calibrate this value by measuring the loaded tyre rolling circumference.
+// The local reference chassis uses a measured 67.00 mm wheel diameter.
+constexpr std::uint32_t kMode1WheelCircumferenceMicrometers = 210487U;
+std::int32_t g_mode1PreviousRightCount = 0;
+std::int32_t g_mode1PreviousLeftCount = 0;
+std::uint64_t g_mode1WheelCountSum = 0U;
+constexpr std::int16_t kMode3BallTargetX = 348;
+constexpr float kMode3LineTargetRpm = 70.0F;
+// Mode 3 line-tracking outer-loop gains are independent from mode 1.
+constexpr float kMode3LineKp = 3.0F;
+constexpr float kMode3LineKi = 0.0F;
+constexpr float kMode3LineKd = 0.02F;
+constexpr std::uint32_t kMode3LineRampSamples =
+    2U * Encoder::kSampleRateHz;
+std::uint32_t g_mode3LineRampStartSequence = 0U;
+std::uint32_t g_mode3LineRampLastSequence = 0U;
+bool g_mode3LineRampComplete = false;
 constexpr std::int16_t kMode2InitialBallTargetX = 525;
-constexpr std::int16_t kMode2TurnaroundX = 450;
-constexpr std::int16_t kMode2FinalBallTargetX = 217;
-constexpr std::int16_t kMode2BallDeadbandPixels = 15;
+constexpr std::int16_t kMode2TurnaroundX = 460;
+constexpr std::int16_t kMode2FinalBallTargetX = 215;
+constexpr std::int16_t kMode2BallDeadbandPixels = 20;
 constexpr std::int16_t kMode3BallDeadbandPixels = 20;
 constexpr std::uint32_t kBallFrameTimeoutSamples =
     Encoder::kSampleRateHz * 3U / 10U;
@@ -148,6 +166,34 @@ std::int32_t roundToInt(float value)
 float absoluteValue(float value)
 {
     return value >= 0.0F ? value : -value;
+}
+
+std::uint64_t absoluteCountDelta(
+    std::int32_t current, std::int32_t previous)
+{
+    const std::int64_t delta =
+        static_cast<std::int64_t>(current) - previous;
+    return static_cast<std::uint64_t>(delta >= 0 ? delta : -delta);
+}
+
+std::uint32_t updateMode1Distance(const Encoder::Sample &sample)
+{
+    g_mode1WheelCountSum +=
+        absoluteCountDelta(sample.rightTotal, g_mode1PreviousRightCount) +
+        absoluteCountDelta(sample.leftTotal, g_mode1PreviousLeftCount);
+    g_mode1PreviousRightCount = sample.rightTotal;
+    g_mode1PreviousLeftCount = sample.leftTotal;
+
+    // Centre travel = average(left travel, right travel).
+    constexpr std::uint64_t kDenominator =
+        2ULL * Encoder::kCountsPerWheelRevolution * 1000ULL;
+    const std::uint64_t distanceMillimeters =
+        (g_mode1WheelCountSum * kMode1WheelCircumferenceMicrometers +
+            kDenominator / 2ULL) /
+        kDenominator;
+    return distanceMillimeters > 0xFFFFFFFFULL
+        ? 0xFFFFFFFFU
+        : static_cast<std::uint32_t>(distanceMillimeters);
 }
 
 void resetBallBalance()
@@ -334,11 +380,41 @@ void enterK230FixedTarget()
 
     GraySensor::init();
     LineTracking::init();
+    LineTracking::setTunings(
+        kMode3LineKp, kMode3LineKi, kMode3LineKd);
+    LineTracking::setBaseRpm(0.0F);
+    g_mode3LineRampStartSequence = Encoder::latest().sequence;
+    g_mode3LineRampLastSequence =
+        g_mode3LineRampStartSequence - 1U;
+    g_mode3LineRampComplete = false;
     SpeedControl::pidEnabled = true;
+}
+
+void updateMode3LineSpeedRamp(std::uint32_t sampleSequence)
+{
+    if (g_mode3LineRampComplete ||
+        sampleSequence == g_mode3LineRampLastSequence) {
+        return;
+    }
+    g_mode3LineRampLastSequence = sampleSequence;
+
+    const std::uint32_t elapsedSamples =
+        sampleSequence - g_mode3LineRampStartSequence;
+    if (elapsedSamples >= kMode3LineRampSamples) {
+        LineTracking::setBaseRpm(kMode3LineTargetRpm);
+        g_mode3LineRampComplete = true;
+        return;
+    }
+
+    const float targetRpm = kMode3LineTargetRpm *
+        static_cast<float>(elapsedSamples) /
+        static_cast<float>(kMode3LineRampSamples);
+    LineTracking::setBaseRpm(targetRpm);
 }
 
 void updateK230StepperDebug(std::uint32_t sampleSequence)
 {
+    updateMode3LineSpeedRamp(sampleSequence);
     GraySensor::update(sampleSequence);
     LineTracking::update(sampleSequence);
     updateBallBalance(
@@ -361,11 +437,37 @@ void enterLineTracking()
     GraySensor::init();
     LineTracking::init();
     SpeedControl::pidEnabled = true;
-    PidDashboard::startLineTrackingRuntime(Encoder::latest().sequence);
+    g_mode1Stopped = false;
+    const Encoder::Sample sample = Encoder::latest();
+    g_mode1PreviousRightCount = sample.rightTotal;
+    g_mode1PreviousLeftCount = sample.leftTotal;
+    g_mode1WheelCountSum = 0U;
+    PidDashboard::startLineTrackingRuntime(sample.sequence);
 }
 
-void updateLineTracking(std::uint32_t sampleSequence)
+void updateLineTracking(const Encoder::Sample &sample)
 {
+    const std::uint32_t sampleSequence = sample.sequence;
+    if (g_mode1Stopped) {
+        PidDashboard::update(sampleSequence);
+        return;
+    }
+
+    const std::uint32_t distanceMillimeters =
+        updateMode1Distance(sample);
+    PidDashboard::setLineTrackingDistanceMillimeters(distanceMillimeters);
+
+    if (distanceMillimeters >= kMode1StopDistanceMillimeters) {
+        // Clear both wheel-speed targets and latch active braking immediately.
+        LineTracking::stop();
+        SpeedControl::pidEnabled = false;
+        SpeedControl::brake();
+        g_mode1Stopped = true;
+        PidDashboard::stopLineTrackingRuntime(sampleSequence);
+        PidDashboard::update(sampleSequence);
+        return;
+    }
+
     GraySensor::update(sampleSequence);
     LineTracking::update(sampleSequence);
     PidDashboard::update(sampleSequence);
@@ -505,7 +607,7 @@ void runOnce()
             updateK230TwoStage(sample.sequence);
             break;
         case AppMode::LineTracking:
-            updateLineTracking(sample.sequence);
+            updateLineTracking(sample);
             break;
     }
 }

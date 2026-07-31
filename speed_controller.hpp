@@ -31,6 +31,9 @@ void init();
 void setTargetRpm(float leftRpm, float rightRpm);
 void setTunings(float kp, float ki, float kd);
 void stop();
+// Hold both TB6612 channels in active short-brake mode until a new target or
+// stop command releases the brake.
+void brake();
 Status latest();
 
 /* Called by the 100 Hz encoder sampling ISR. */

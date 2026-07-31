@@ -20,6 +20,7 @@ volatile float g_leftMeasuredRpm = 0.0F;
 volatile float g_rightMeasuredRpm = 0.0F;
 volatile std::int16_t g_leftOutput = 0;
 volatile std::int16_t g_rightOutput = 0;
+volatile bool g_brakeRequested = false;
 
 std::int32_t g_leftCountHistory[kSpeedMeasurementWindowSamples] = {};
 std::int32_t g_rightCountHistory[kSpeedMeasurementWindowSamples] = {};
@@ -125,6 +126,7 @@ void init()
     g_rightMeasuredRpm = 0.0F;
     g_leftOutput = 0;
     g_rightOutput = 0;
+    g_brakeRequested = false;
     resetSpeedMeasurement();
     g_leftPid.configure(makePidConfig(
         kDefaultKp, kDefaultKi, kDefaultKd));
@@ -139,6 +141,7 @@ void setTargetRpm(float leftRpm, float rightRpm)
     __disable_irq();
     g_leftTargetRpm = leftRpm;
     g_rightTargetRpm = rightRpm;
+    g_brakeRequested = false;
     __enable_irq();
 }
 
@@ -155,6 +158,18 @@ void stop()
 {
     setTargetRpm(0.0F, 0.0F);
     TB6612::coast();
+}
+
+void brake()
+{
+    __disable_irq();
+    g_leftTargetRpm = 0.0F;
+    g_rightTargetRpm = 0.0F;
+    g_leftOutput = 0;
+    g_rightOutput = 0;
+    g_brakeRequested = true;
+    __enable_irq();
+    TB6612::brake();
 }
 
 Status latest()
@@ -177,6 +192,15 @@ void updateFromEncoder(
     std::int32_t leftDeltaCounts, std::int32_t rightDeltaCounts)
 {
     updateSpeedMeasurement(leftDeltaCounts, rightDeltaCounts);
+
+    if (g_brakeRequested) {
+        g_leftPid.reset(g_leftMeasuredRpm);
+        g_rightPid.reset(g_rightMeasuredRpm);
+        g_leftOutput = 0;
+        g_rightOutput = 0;
+        TB6612::brake();
+        return;
+    }
 
     if (!pidEnabled) {
         g_leftPid.reset(g_leftMeasuredRpm);

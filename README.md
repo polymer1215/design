@@ -133,10 +133,28 @@ first valid `BALL,x` or `BALL,-1` frame confirms the link and opens the mode
 menu. The displayed PB21 press count selects modes cyclically: counts 1/4/7
 select mode 1, 2/5/8 select mode 2, and 3/6/9 select mode 3. Press the external
 `user_button` to start. Mode 1 runs line tracking, stops consuming K230 data,
-keeps the stepper driver disabled, and shows its elapsed running time on the
-OLED. Mode 2 initially targets K230 coordinate 500 but switches once to 227 as
+keeps the stepper driver disabled, and shows only elapsed time and travelled
+distance on the OLED using the 12x24 font. Mode 2 initially targets K230 coordinate 500 but switches once to 227 as
 soon as the ball reaches or passes X=450. Mode 3 runs line tracking and the
-fixed-target K230/stepper controller at X=345 concurrently.
+fixed-target K230/stepper controller at X=345 concurrently. Its line-tracking
+base target ramps linearly from 0 to 70 RPM over the first 2 seconds.
+
+In mode 1, the wheel targets are set to zero immediately when the accumulated
+centre travel reaches 5.94 m. Both TB6612 channels enter active short-brake
+mode in the same application update, and the 100 Hz wheel-control ISR keeps
+that brake latched instead of reverting to coast. The OLED freezes the
+displayed run time and distance at the stop instant. Transverse-line counting
+and the former three-line/0.1-second stop condition are no longer used. This
+distance stop is not applied to mode 3.
+
+Mode 1 odometry snapshots both signed encoder totals when the mode starts. At
+each update it accumulates the absolute left and right count increments, then
+uses their average as the vehicle-centre travel. With 1456 counts per wheel
+revolution and the local reference chassis' measured 67.00 mm wheel diameter,
+the conversion is `distance = (abs(left counts) + abs(right counts)) / 2 *
+(pi * 67 mm) / 1456`. Adjust `kMode1WheelCircumferenceMicrometers` in
+`car_app.cpp` after measuring the loaded tyre's real rolling circumference.
+The one-lap stop threshold is `kMode1StopDistanceMillimeters` in `car_app.cpp`.
 `CarApp::selectMode(CarApp::AppMode::LineTracking)` starts the existing
 gray-sensor and cascaded wheel-control path. Selecting the debug mode again
 safely stops the wheels before re-enabling the D36A, but it does not restart
@@ -298,11 +316,20 @@ sensor weights. Every new sample updates the outer loop. The correction
 magnitude reaches the 100 RPM limit at either outermost sensor. The controller
 settings are:
 
-- Base speed: 100 RPM
-- Kp: 25
-- Ki: 0
-- Kd: 0
+- Mode 1 base speed: 100 RPM
+- Mode 3 base speed: linear 0-to-70 RPM startup ramp over 2 seconds, then 70 RPM
 - Differential correction limit: +/-100 RPM
+
+| Outer-loop PID | Mode 1 | Mode 3 |
+| --- | ---: | ---: |
+| Kp | 8.0 | 8.0 |
+| Ki | 0.0 | 0.0 |
+| Kd | 0.1 | 0.1 |
+
+Mode 1 uses `kDefaultKp`, `kDefaultKi` and `kDefaultKd` from
+`line_tracking.hpp`. Mode 3 loads the independent `kMode3LineKp`,
+`kMode3LineKi` and `kMode3LineKd` constants from `car_app.cpp` after the line
+tracker is initialized, so tuning mode 3 does not alter mode 1.
 
 The target mix is `left_rpm = base_rpm - correction_rpm` and
 `right_rpm = base_rpm + correction_rpm`, clamped to 0 through twice the base
@@ -313,8 +340,10 @@ real-car tuning. Set `LineTracking::enabled` to `false`, or call
 When three or more sensors detect black, the controller still records the
 wide-line flag and black-sensor count for diagnostics, but applies the same
 weighted-average calculation to the complete mask. If no sensor detects black,
-the outer PID state is reset and both wheels continue straight at the base
-speed.
+the outer PID update is paused and the previous left/right target speeds are
+held. Modes 1 and 3 therefore continue with the steering rate that was active
+immediately before the line was lost. PID updates resume when any sensor sees
+the line again.
 
 ## Reusable PID Controller
 

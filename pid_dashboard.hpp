@@ -20,6 +20,8 @@ View currentView();
 void setBallPosition(const K230Protocol::BallPosition &position);
 void setModeSelection(std::uint8_t b21PressCount);
 void startLineTrackingRuntime(std::uint32_t sampleSequence);
+void setLineTrackingDistanceMillimeters(std::uint32_t distanceMillimeters);
+void stopLineTrackingRuntime(std::uint32_t sampleSequence);
 void update(std::uint32_t sampleSequence);
 
 }  // namespace PidDashboard

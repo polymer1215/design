@@ -60,8 +60,8 @@ std::uint8_t countSetBits(std::uint8_t mask)
 float weightedErrorForMask(std::uint8_t mask)
 {
     constexpr float kSensorWeights[8] = {
-        6.0F, 4.0F, 2.0F, 1.0F,
-        -1.0F, -2.0F, -4.0F, -6.0F
+        6.0F, 4.0F, 2.0F, 0.0F,
+        -0.0F, -2.0F, -4.0F, -6.0F
     };
     float weightSum = 0.0F;
     std::uint8_t activeCount = 0U;
@@ -217,9 +217,14 @@ void update(std::uint32_t sampleSequence)
     }
 
     if (blackSensorCount == 0U) {
-        resetOuterLoop(sampleSequence);
-        g_status.error = 0.0F;
-        applySpeedTargets(0.0F);
+        /*
+         * Pause steering updates while the line is lost. Keep the last
+         * left/right targets so the vehicle continues with the same motion
+         * it had immediately before losing the line. Advancing the PID time
+         * reference prevents the lost interval from becoming one large dt
+         * when the line is detected again.
+         */
+        g_lastPidSequence = sampleSequence;
         return;
     }
 
