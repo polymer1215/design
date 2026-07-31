@@ -92,7 +92,7 @@ Call `OLED_Init()` after `SYSCFG_DL_init()`, update the framebuffer with
 
 Both Hall encoders are decoded using GPIO interrupts on every A/B edge.
 Sampling runs at 100 Hz using SysTick, while the OLED refreshes at 5 Hz.
-The wheel-speed PID is the active motor-control path.
+The wheel-speed PID runs only while `CarApp::AppMode::LineTracking` is active.
 
 | Encoder signal | MSPM0G3507 pin | Wheel |
 | --- | --- | --- |
@@ -122,11 +122,21 @@ negative target RPM uses the original forward direction.
 ## Application Structure
 
 `empty_cpp.cpp` only initializes SysConfig and runs the application loop.
-`car_app.cpp` owns subsystem startup and cooperative scheduling,
-and `pid_dashboard.cpp` owns OLED formatting and refresh timing. The encoder
-SysTick ISR records each sample and runs the 100 Hz speed-control update. The
-line-tracking outer loop runs once per new sensor sample and updates the two
-speed targets. The stepped speed test remains available but is not scheduled.
+`car_app.cpp` owns subsystem startup, cooperative scheduling and mode
+transitions, while `pid_dashboard.cpp` owns OLED formatting and refresh timing.
+The encoder SysTick ISR supplies the common 100 Hz refresh timebase and runs
+the wheel-speed update, whose output remains disabled outside line-tracking
+mode.
+
+Startup selects `CarApp::AppMode::K230StepperDebug`. This mode keeps both wheel
+motors stopped, monitors K230 data on the OLED, immediately enables the D36A,
+and defines the manually centered mechanism as zero. It holds at zero until a
+valid K230 ball coordinate arrives, then runs the stepper position PID.
+`CarApp::selectMode(CarApp::AppMode::LineTracking)` starts the existing
+gray-sensor and cascaded wheel-control path. Selecting the debug mode again
+safely stops the wheels before re-enabling the D36A, but it does not restart
+or redefine the software zero. A future button handler can call the same API;
+this project does not assign a button GPIO yet.
 
 ## Yahboom K230 UART Link
 
@@ -135,17 +145,14 @@ in a 512-byte interrupt-driven ring buffer. The current application echoes
 the bytes unchanged and does not parse any Yahboom packet format.
 
 The MSPM0 stream parser accepts `BALL,x\r\n`, validates X against the
-640-pixel AI-frame width, and shows `K230 BALL`, `X`, and the decoded frame
-sequence on the OLED. `BALL,-1\r\n` displays `K230 NO BALL` with `X:---`.
+640-pixel AI-frame width, and shows `K230 BALL` and `X` on the OLED.
+`BALL,-1\r\n` displays `K230 NO BALL` with `X:---`.
 Invalid, partial, and overlong lines do not update the displayed position.
-After the first valid frame, the OLED keeps the latest decoded K230 position
-instead of timing out to the PID page.
-
-Before the first valid frame, the OLED alternates once per second between the
-motor page and receive diagnostics. `K230 WAIT` with `RX:000000` means UART2
-has not received any byte. `K230 RAW` means bytes are arriving, but no complete
-valid `BALL,x` line has been decoded. The `DROP` line reports UART ring-buffer
-overflow.
+In the default debug mode the OLED stays on the K230 monitor page instead of
+rotating through motor or gray-sensor pages. `K230 WAIT` with `RX:000000`
+means UART2 has not received any byte. `K230 RAW` means bytes are arriving,
+but no complete valid `BALL,x` line has been decoded. The bottom line shows
+the UART ring-buffer drop count and the D36A enable state.
 
 | Signal | MSPM0G3507 | Yahboom K230 communication connector |
 | --- | --- | --- |
@@ -184,6 +191,51 @@ interrupt. This makes reception independent of the K230/MSPM0 power-up order.
 The K230 UART uses an explicit zero-millisecond read timeout, so discarding the
 previous echo never delays the next coordinate transmission.
 
+## K230 Ball-position PID
+
+The default mode starts a one-shot ball-position sequence when the first valid
+`BALL,x` frame arrives. It first drives the ball toward `X=465`. Reaching or
+crossing the `465 +/- 3` arrival window immediately changes the setpoint to
+`X=227`; the controller then keeps `X=227` as its permanent holding target.
+Re-entering the K230 stepper mode restarts this sequence.
+
+Each new frame updates an absolute stepper target within the +/-30-degree
+software limits. A separate 100 Hz online trajectory loop converts that
+target-position error into step speed and applies an acceleration limit. This
+keeps motion continuous between the K230's approximately 55--60 FPS coordinate
+updates and avoids instantaneous starts and reversals. The PID history is
+reset at the 465-to-227 transition so the outbound integral and derivative
+state do not oppose the return movement.
+
+| Parameter | Current value |
+| --- | ---: |
+| Kp | 0.80 pulse/pixel |
+| Ki | 0.20 pulse/(pixel second) |
+| Kd | 0.10 pulse/(pixel/second) |
+| Coordinate deadband | +/-3 pixels |
+| Maximum STEP speed | 2500 pulse/s |
+| Maximum STEP acceleration | 40000 pulse/s^2 |
+| Trajectory position gain | 20 (pulse/s)/pulse |
+| Frame timeout | 0.30 seconds |
+
+At the configured acceleration, a start from rest reaches 2500 pulse/s in
+62.5 ms, while a full +2500 to -2500 pulse/s reversal takes at least 125 ms.
+Lower `kMaximumStepAccelerationPps2` for softer motion, or raise it if the
+mechanism becomes too sluggish. `kMaximumStepSpeedPps` independently limits
+the highest speed, and `kTrajectoryPositionGain` determines how strongly the
+trajectory loop converts remaining position error into speed.
+
+`BALL,-1` or 0.30 seconds without a valid frame immediately stops the STEP
+train, resets the PID state, and keeps the driver enabled so the mechanism
+holds its current commanded position. The PID resumes from a reset state on
+the next valid frame. The output is an absolute commanded motor position, not
+measured shaft-angle feedback.
+
+The observed mechanism direction is encoded as
+`kBalanceMotorPolarity = -1` in `car_app.cpp`: positive motor rotation makes
+the ball X coordinate decrease. The same polarity is used for both the
+outbound target and the final holding target.
+
 ## Ganwei Eight-channel Grayscale Sensor
 
 The sensor uses its eight parallel digital outputs instead of I2C. Install
@@ -203,21 +255,20 @@ from 5 V and connect all grounds.
 | OUT7 | PB10 |
 | OUT8 | PB11 |
 
-Sampling runs at the encoder's 100 Hz rate. The packed digital byte maps OUT1
-to bit 0 through OUT8 to bit 7. The OLED `GRAY GPIO` page shows the hexadecimal
-mask and each raw channel state. A disconnected open-drain signal normally
-reads high because of the internal pull-up, so this interface cannot provide
-automatic disconnect detection.
+In line-tracking mode, sampling runs at the encoder's 100 Hz rate. The packed
+digital byte maps OUT1 to bit 0 through OUT8 to bit 7. A disconnected
+open-drain signal normally reads high because of the internal pull-up, so this
+interface cannot provide automatic disconnect detection.
 
 Do not connect the sensor SCL/SDA pins. PA0/PA1 remain dedicated to the OLED's
 hardware I2C bus.
 
 ## Cascaded Line-Tracking PID
 
-Line tracking is the outer loop of the active cascaded controller. It runs at
-the 100 Hz sensor sampling rate and outputs a differential RPM correction. The
-two inner wheel-speed PID controllers independently convert their RPM errors
-to TB6612 PWM commands.
+Line tracking is an explicitly selected application mode. It runs its outer
+loop at the 100 Hz sensor sampling rate and outputs a differential RPM
+correction. The two inner wheel-speed PID controllers independently convert
+their RPM errors to TB6612 PWM commands.
 
 The active-low sensor byte is converted to the same OUT1-to-bit7 line mask used
 by the `D:\design\5_29` reference controller. The unchanged sensor module is
@@ -261,3 +312,60 @@ instance. The line tracker uses a third instance as the outer loop and writes
 only RPM targets; it never writes PWM directly. Future vision-position and
 stepper-motor controllers can create additional instances without depending
 on the car, encoder, sensor, or TB6612 modules.
+
+## D36A Stepper Motor Driver
+
+The project includes a non-blocking DriverLib stepper driver for D36A channel
+1. It follows the standalone `step_motor` reference wiring and the confirmed
+16-microstep D36A setting.
+
+| D36A signal | MSPM0G3507 pin | Purpose |
+| --- | --- | --- |
+| ST1 / STEP1 | PA7 | One rising edge advances one microstep |
+| DIR1 | PA8 | Direction selection |
+| EN1 | PA9 | Active-high driver wake/enable |
+| GND | GND | Common signal reference |
+
+TIMG12 uses the 80 MHz BUSCLK and generates 50% duty-cycle STEP pulses from 10
+through 10000 pulse/s. The conversion uses a 1.8-degree motor (200 full
+steps/revolution) and 16 microsteps, or 3200 pulses/revolution. The software
+travel range is fixed at +/-30 degrees, represented by +/-267 pulses. Relative,
+absolute and continuous-speed commands all stop before crossing those limits.
+
+```cpp
+Stepper::setEnabled(true);
+Stepper::setPositionPulses(0);  // Define the manually centered position.
+Stepper::moveToDegrees(30.0F, 500U);
+
+// A future vision controller can command signed continuous pulse frequency.
+Stepper::setVelocity(-1200);
+
+Stepper::stop();             // Keep holding torque.
+Stepper::setEnabled(false);  // Stop and remove holding torque.
+```
+
+`Stepper::positionPulses()` is a commanded open-loop position, not measured
+shaft angle. A stalled or under-powered motor can lose steps without changing
+this value. This design intentionally does not use an angle sensor or laser
+distance sensor. Ball balancing uses the K230 X coordinate as its feedback and
+the commanded pulse position as an open-loop mechanism estimate.
+The mechanism must be placed manually at its center before every power-up.
+
+After boot, the default mode immediately enables the driver, defines the
+manually centered position as zero, and holds there without generating STEP
+pulses. No automatic sweep is performed. The first fresh detected-ball frame
+starts PID control. Re-entering the mode later keeps the original software zero
+and does not reinterpret the current position.
+
+The +/-30-degree range is enforced relative to that startup zero at three
+levels: absolute commands are rejected outside +/-267 pulses, relative
+commands are rejected when their destination would cross the range, and the
+STEP interrupt checks the next pulse position before every rising edge. This
+also prevents continuous-speed commands from crossing the structural limit.
+
+Before connecting the linkage, verify PA7 with a logic analyzer, test at low
+frequency with the mechanism unloaded, check motor phase wiring and D36A
+current/microstep settings, and confirm that positive motion matches the
+chosen balance-rod direction. The current driver has software pulse-count
+limits and the balance controller has an online acceleration ramp, but there
+is no physical limit-switch input, stall detection, or fault input.

@@ -3,8 +3,15 @@
 
 namespace CarApp {
 
+enum class AppMode {
+    K230StepperDebug,
+    LineTracking,
+};
+
 void init();
 void runOnce();
+void selectMode(AppMode mode);
+AppMode currentMode();
 
 }  // namespace CarApp
 
