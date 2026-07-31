@@ -6,9 +6,9 @@
 namespace LineTracking {
 
 constexpr float kDefaultBaseRpm = 100.0F;
-constexpr float kDefaultKp = 7.5F;
+constexpr float kDefaultKp = 8.0F;
 constexpr float kDefaultKi = 0.0F;
-constexpr float kDefaultKd = 0.0F;
+constexpr float kDefaultKd = 0.1F;
 constexpr float kCorrectionLimitRpm = 100.0F;
 constexpr std::uint8_t kWideLineSensorCount = 3U;
 

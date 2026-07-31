@@ -178,13 +178,15 @@ void showModeSelection()
     const char *modeLine = "PRESS B21";
     if (g_b21PressCount != 0U) {
         const std::uint8_t modeNumber = static_cast<std::uint8_t>(
-            ((g_b21PressCount - 1U) % 3U) + 1U);
+            ((g_b21PressCount - 1U) % 4U) + 1U);
         if (modeNumber == 1U) {
             modeLine = "1:LINE TRACK";
         } else if (modeNumber == 2U) {
             modeLine = "2:500 TO 227";
-        } else {
+        } else if (modeNumber == 3U) {
             modeLine = "3:TRACK+STEP";
+        } else {
+            modeLine = "4:BALL+TRACK";
         }
     }
 

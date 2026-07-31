@@ -50,7 +50,7 @@ constexpr float kMode3LineKp = 3.0F;
 constexpr float kMode3LineKi = 0.0F;
 constexpr float kMode3LineKd = 0.02F;
 constexpr std::uint32_t kMode3LineRampSamples =
-    2U * Encoder::kSampleRateHz;
+    4U * Encoder::kSampleRateHz;
 std::uint32_t g_mode3LineRampStartSequence = 0U;
 std::uint32_t g_mode3LineRampLastSequence = 0U;
 bool g_mode3LineRampComplete = false;
@@ -61,6 +61,7 @@ constexpr std::int16_t kMode2BallDeadbandPixels = 20;
 constexpr std::int16_t kMode3BallDeadbandPixels = 20;
 constexpr std::uint32_t kBallFrameTimeoutSamples =
     Encoder::kSampleRateHz * 3U / 10U;
+constexpr std::int16_t kMaximumBallFrameDeltaX = 120;
 constexpr float kBallVelocityFilterTimeConstantSeconds = 0.10F;
 constexpr float kBallVelocityMinimumDisplacementPixels = 3.0F;
 constexpr float kBallVelocityOutputDeadbandPixelsPerSecond = 8.0F;
@@ -96,6 +97,9 @@ float g_previousBallX = 0.0F;
 float g_filteredBallVelocityPixelsPerSecond = 0.0F;
 bool g_ballVelocityInitialized = false;
 bool g_mode2TargetSwitched = false;
+std::int16_t g_mode4BallTargetX = kMode3BallTargetX;
+std::int16_t g_mode4CandidateTargetX = kMode3BallTargetX;
+bool g_hasMode4CandidateTarget = false;
 
 bool buttonPinIsPressed(std::uint32_t pins, std::uint32_t buttonPin)
 {
@@ -168,6 +172,25 @@ float absoluteValue(float value)
     return value >= 0.0F ? value : -value;
 }
 
+std::int32_t absoluteDifference(std::int16_t left, std::int16_t right)
+{
+    const std::int32_t difference =
+        static_cast<std::int32_t>(left) - right;
+    return difference >= 0 ? difference : -difference;
+}
+
+bool ballFrameHasExcessiveJump(
+    const K230Protocol::BallPosition &position)
+{
+    if (!g_hasBallFrame || !g_latestBallPosition.detected ||
+        !position.detected) {
+        return false;
+    }
+
+    return absoluteDifference(position.x, g_latestBallPosition.x) >
+        kMaximumBallFrameDeltaX;
+}
+
 std::uint64_t absoluteCountDelta(
     std::int32_t current, std::int32_t previous)
 {
@@ -220,6 +243,13 @@ void serviceK230Link(std::uint32_t sampleSequence)
     while (count < kMaximumBytesPerRun && K230Uart::read(data)) {
         K230Uart::write(data);
         if (K230Protocol::consume(data, position)) {
+            if (ballFrameHasExcessiveJump(position)) {
+                // Keep the last accepted coordinates but advance the frame
+                // sequence so this received frame still runs one PID update
+                // using the previous measurement.
+                position.detected = g_latestBallPosition.detected;
+                position.x = g_latestBallPosition.x;
+            }
             g_latestBallPosition = position;
             g_hasBallFrame = true;
             g_lastBallFrameSampleSequence = sampleSequence;
@@ -315,6 +345,11 @@ void updateBallBalance(
             dtSeconds);
     const std::int32_t targetPulses =
         kBalanceMotorPolarity * roundToInt(pidOutput);
+    if (!Stepper::isEnabled()) {
+        // Modes 2/3/4 leave the mechanism free after power-up and only wake
+        // the driver when the first usable frame actually starts PID control.
+        Stepper::setEnabled(true);
+    }
     if (!Stepper::moveTo(targetPulses, kBalanceStepFrequencyHz)) {
         resetBallBalance();
         return;
@@ -349,7 +384,7 @@ void enterK230StepperControl()
     TB6612::coast();
 
     Stepper::stop();
-    Stepper::setEnabled(true);
+    Stepper::setEnabled(false);
     if (!g_stepperZeroEstablished) {
         Stepper::setPositionPulses(0);
         g_stepperZeroEstablished = true;
@@ -422,6 +457,16 @@ void updateK230StepperDebug(std::uint32_t sampleSequence)
     PidDashboard::update(sampleSequence);
 }
 
+void updateK230CapturedTarget(std::uint32_t sampleSequence)
+{
+    updateMode3LineSpeedRamp(sampleSequence);
+    GraySensor::update(sampleSequence);
+    LineTracking::update(sampleSequence);
+    updateBallBalance(
+        sampleSequence, g_mode4BallTargetX, kMode3BallDeadbandPixels);
+    PidDashboard::update(sampleSequence);
+}
+
 void exitK230StepperControl()
 {
     resetBallBalance();
@@ -485,6 +530,7 @@ void exitCurrentMode()
 {
     switch (g_currentMode) {
         case AppMode::K230StepperDebug:
+        case AppMode::K230CapturedTarget:
             exitLineTracking();
             exitK230StepperControl();
             break;
@@ -501,6 +547,7 @@ void enterCurrentMode()
 {
     switch (g_currentMode) {
         case AppMode::K230StepperDebug:
+        case AppMode::K230CapturedTarget:
             enterK230FixedTarget();
             break;
         case AppMode::K230TwoStage:
@@ -540,6 +587,9 @@ void init()
     g_latestBallPosition = {};
     g_hasBallFrame = false;
     g_lastBallFrameSampleSequence = 0U;
+    g_mode4BallTargetX = kMode3BallTargetX;
+    g_mode4CandidateTargetX = kMode3BallTargetX;
+    g_hasMode4CandidateTarget = false;
     resetBallBalance();
     g_modeActive = false;
     g_startupState = StartupState::WaitingForK230;
@@ -572,6 +622,14 @@ void runOnce()
     if (g_startupState == StartupState::SelectingMode) {
         // Keep the UART buffer current while the operator chooses a mode.
         serviceK230Link(sample.sequence);
+        g_hasMode4CandidateTarget =
+            ballFrameIsFresh(sample.sequence) &&
+            g_latestBallPosition.detected;
+        if (g_hasMode4CandidateTarget) {
+            // This remains the most recent accepted detected frame preceding
+            // the eventual USER-button confirmation.
+            g_mode4CandidateTargetX = g_latestBallPosition.x;
+        }
         if (takeButtonPress(g_b21Button)) {
             g_b21PressCount = g_b21PressCount < 99U
                 ? static_cast<std::uint8_t>(g_b21PressCount + 1U)
@@ -580,13 +638,22 @@ void runOnce()
         }
         if (takeButtonPress(g_userButton) && g_b21PressCount != 0U) {
             const std::uint8_t modeNumber = static_cast<std::uint8_t>(
-                ((g_b21PressCount - 1U) % 3U) + 1U);
+                ((g_b21PressCount - 1U) % 4U) + 1U);
+            if (modeNumber == 4U && !g_hasMode4CandidateTarget) {
+                // Mode 4 cannot define its fixed target until at least one
+                // detected ball frame has arrived before confirmation.
+                PidDashboard::update(sample.sequence);
+                return;
+            }
             if (modeNumber == 1U) {
                 selectMode(AppMode::LineTracking);
             } else if (modeNumber == 2U) {
                 selectMode(AppMode::K230TwoStage);
-            } else {
+            } else if (modeNumber == 3U) {
                 selectMode(AppMode::K230StepperDebug);
+            } else {
+                g_mode4BallTargetX = g_mode4CandidateTargetX;
+                selectMode(AppMode::K230CapturedTarget);
             }
             g_startupState = StartupState::Running;
         } else {
@@ -602,6 +669,9 @@ void runOnce()
     switch (g_currentMode) {
         case AppMode::K230StepperDebug:
             updateK230StepperDebug(sample.sequence);
+            break;
+        case AppMode::K230CapturedTarget:
+            updateK230CapturedTarget(sample.sequence);
             break;
         case AppMode::K230TwoStage:
             updateK230TwoStage(sample.sequence);
