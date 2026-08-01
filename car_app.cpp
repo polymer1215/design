@@ -56,9 +56,9 @@ std::uint32_t g_mode3LineRampLastSequence = 0U;
 bool g_mode3LineRampComplete = false;
 constexpr std::int16_t kMode2InitialBallTargetX = 525;
 constexpr std::int16_t kMode2TurnaroundX = 460;
-constexpr std::int16_t kMode2FinalBallTargetX = 215;
-constexpr std::int16_t kMode2BallDeadbandPixels = 20;
-constexpr std::int16_t kMode3BallDeadbandPixels = 20;
+constexpr std::int16_t kMode2FinalBallTargetX = 233;
+constexpr std::int16_t kMode2BallDeadbandPixels = 18;
+constexpr std::int16_t kMode3BallDeadbandPixels = 10;
 constexpr std::uint32_t kBallFrameTimeoutSamples =
     Encoder::kSampleRateHz * 3U / 10U;
 constexpr std::int16_t kMaximumBallFrameDeltaX = 120;
@@ -74,7 +74,7 @@ constexpr float kMode2BalanceKi = 0.080F;
 constexpr float kMode2BalanceKd = 0.6F;
 constexpr float kMode3BalanceKp = 0.7F;
 constexpr float kMode3BalanceKi = 0.07F;
-constexpr float kMode3BalanceKd = 0.6F;
+constexpr float kMode3BalanceKd = 0.60F;
 
 bool g_stepperZeroEstablished = false;
 Control::PidController g_ballPid({

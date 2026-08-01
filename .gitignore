@@ -13,6 +13,7 @@ Release/
 *.bin
 *.map
 *.xml
+*.docx
 
 # Generated SysConfig/build files
 ti_msp_dl_config.c
