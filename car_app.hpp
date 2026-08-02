@@ -5,9 +5,11 @@ namespace CarApp {
 
 enum class AppMode {
     K230StepperDebug,
+    K230FourSecondFixedTarget,
     K230CapturedTarget,
     K230TwoStage,
     LineTracking,
+    WheelPwmTest,
 };
 
 void init();

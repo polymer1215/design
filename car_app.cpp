@@ -37,6 +37,7 @@ DebouncedButton g_b21Button = {};
 DebouncedButton g_userButton = {};
 bool g_mode1Stopped = false;
 constexpr std::uint32_t kMode1StopDistanceMillimeters = 5940U;
+constexpr float kWheelPwmTestTargetRpm = 70.0F;
 // Calibrate this value by measuring the loaded tyre rolling circumference.
 // The local reference chassis uses a measured 67.00 mm wheel diameter.
 constexpr std::uint32_t kMode1WheelCircumferenceMicrometers = 210487U;
@@ -50,14 +51,24 @@ constexpr float kMode3LineKp = 3.0F;
 constexpr float kMode3LineKi = 0.0F;
 constexpr float kMode3LineKd = 0.02F;
 constexpr std::uint32_t kMode3LineRampSamples =
+    Encoder::kSampleRateHz;
+constexpr std::uint32_t kMode4LineRampSamples =
     4U * Encoder::kSampleRateHz;
-std::uint32_t g_mode3LineRampStartSequence = 0U;
-std::uint32_t g_mode3LineRampLastSequence = 0U;
-bool g_mode3LineRampComplete = false;
-constexpr std::int16_t kMode2InitialBallTargetX = 525;
-constexpr std::int16_t kMode2TurnaroundX = 460;
+constexpr std::uint32_t kMode5LineRampSamples =
+    5U * Encoder::kSampleRateHz / 2U;
+// QUESTION 4 runs its first balance PID for this duration before switching.
+constexpr float kQuestion4FirstPidDurationSeconds = 1.0F;
+constexpr std::uint32_t kQuestion4FirstPidSamples =
+    static_cast<std::uint32_t>(
+        kQuestion4FirstPidDurationSeconds * Encoder::kSampleRateHz + 0.5F);
+std::uint32_t g_lineRampSamples = kMode3LineRampSamples;
+std::uint32_t g_lineRampStartSequence = 0U;
+std::uint32_t g_lineRampLastSequence = 0U;
+bool g_lineRampComplete = false;
+constexpr std::int16_t kMode2InitialBallTargetX = 535;
+constexpr std::int16_t kMode2TurnaroundX = 450;
 constexpr std::int16_t kMode2FinalBallTargetX = 233;
-constexpr std::int16_t kMode2BallDeadbandPixels = 18;
+constexpr std::int16_t kMode2BallDeadbandPixels = 10;
 constexpr std::int16_t kMode3BallDeadbandPixels = 10;
 constexpr std::uint32_t kBallFrameTimeoutSamples =
     Encoder::kSampleRateHz * 3U / 10U;
@@ -69,12 +80,23 @@ constexpr std::uint32_t kBalanceStepFrequencyHz = 1200U;
 // Invert if positive motor angle makes the ball move away from the target.
 constexpr std::int32_t kBalanceMotorPolarity = -1;
 // Mode 2 gains are tuned independently and retain the current manual values.
-constexpr float kMode2BalanceKp = 0.80F;
-constexpr float kMode2BalanceKi = 0.080F;
-constexpr float kMode2BalanceKd = 0.6F;
-constexpr float kMode3BalanceKp = 0.7F;
-constexpr float kMode3BalanceKi = 0.07F;
-constexpr float kMode3BalanceKd = 0.60F;
+constexpr float kMode2BalanceKp = 0.9F;
+constexpr float kMode2BalanceKi = 0.09F;
+constexpr float kMode2BalanceKd = 0.7F;
+// QUESTION 4 has two independently tunable balance PID stages. The second
+// stage starts with the current QUESTION 5 values but is not coupled to them.
+constexpr float kQuestion4FirstBalanceKp = 1.5F;
+constexpr float kQuestion4FirstBalanceKi = 0.15F;
+constexpr float kQuestion4FirstBalanceKd = 0.6F;
+constexpr float kQuestion4SecondBalanceKp = 0.7F;
+constexpr float kQuestion4SecondBalanceKi = 0.07F;
+constexpr float kQuestion4SecondBalanceKd = 0.60F;
+constexpr float kQuestion5BalanceKp = 0.7F;
+constexpr float kQuestion5BalanceKi = 0.07F;
+constexpr float kQuestion5BalanceKd = 0.60F;
+constexpr float kQuestion6BalanceKp = 0.7F;
+constexpr float kQuestion6BalanceKi = 0.07F;
+constexpr float kQuestion6BalanceKd = 0.60F;
 
 bool g_stepperZeroEstablished = false;
 Control::PidController g_ballPid({
@@ -97,9 +119,11 @@ float g_previousBallX = 0.0F;
 float g_filteredBallVelocityPixelsPerSecond = 0.0F;
 bool g_ballVelocityInitialized = false;
 bool g_mode2TargetSwitched = false;
-std::int16_t g_mode4BallTargetX = kMode3BallTargetX;
-std::int16_t g_mode4CandidateTargetX = kMode3BallTargetX;
-bool g_hasMode4CandidateTarget = false;
+std::uint32_t g_question4PidStageStartSequence = 0U;
+bool g_question4SecondPidActive = false;
+std::int16_t g_mode5BallTargetX = kMode3BallTargetX;
+std::int16_t g_mode5CandidateTargetX = kMode3BallTargetX;
+bool g_hasMode5CandidateTarget = false;
 
 bool buttonPinIsPressed(std::uint32_t pins, std::uint32_t buttonPin)
 {
@@ -407,10 +431,11 @@ void enterK230TwoStage()
     enterK230StepperControl();
 }
 
-void enterK230FixedTarget()
+void enterK230FixedTarget(
+    std::uint32_t lineRampSamples,
+    float balanceKp, float balanceKi, float balanceKd)
 {
-    g_ballPid.setTunings(
-        kMode3BalanceKp, kMode3BalanceKi, kMode3BalanceKd);
+    g_ballPid.setTunings(balanceKp, balanceKi, balanceKd);
     enterK230StepperControl();
 
     GraySensor::init();
@@ -418,36 +443,69 @@ void enterK230FixedTarget()
     LineTracking::setTunings(
         kMode3LineKp, kMode3LineKi, kMode3LineKd);
     LineTracking::setBaseRpm(0.0F);
-    g_mode3LineRampStartSequence = Encoder::latest().sequence;
-    g_mode3LineRampLastSequence =
-        g_mode3LineRampStartSequence - 1U;
-    g_mode3LineRampComplete = false;
+    g_lineRampSamples = lineRampSamples;
+    g_lineRampStartSequence = Encoder::latest().sequence;
+    g_lineRampLastSequence = g_lineRampStartSequence - 1U;
+    g_lineRampComplete = false;
+    PidDashboard::startLineTrackingRuntime(
+        g_lineRampStartSequence);
     SpeedControl::pidEnabled = true;
 }
 
 void updateMode3LineSpeedRamp(std::uint32_t sampleSequence)
 {
-    if (g_mode3LineRampComplete ||
-        sampleSequence == g_mode3LineRampLastSequence) {
+    if (g_lineRampComplete ||
+        sampleSequence == g_lineRampLastSequence) {
         return;
     }
-    g_mode3LineRampLastSequence = sampleSequence;
+    g_lineRampLastSequence = sampleSequence;
 
     const std::uint32_t elapsedSamples =
-        sampleSequence - g_mode3LineRampStartSequence;
-    if (elapsedSamples >= kMode3LineRampSamples) {
+        sampleSequence - g_lineRampStartSequence;
+    if (elapsedSamples >= g_lineRampSamples) {
         LineTracking::setBaseRpm(kMode3LineTargetRpm);
-        g_mode3LineRampComplete = true;
+        g_lineRampComplete = true;
         return;
     }
 
     const float targetRpm = kMode3LineTargetRpm *
         static_cast<float>(elapsedSamples) /
-        static_cast<float>(kMode3LineRampSamples);
+        static_cast<float>(g_lineRampSamples);
     LineTracking::setBaseRpm(targetRpm);
 }
 
+void resetQuestion4PidStage(std::uint32_t sampleSequence)
+{
+    g_question4PidStageStartSequence = sampleSequence;
+    g_question4SecondPidActive = false;
+}
+
+void updateQuestion4PidStage(std::uint32_t sampleSequence)
+{
+    if (g_question4SecondPidActive ||
+        sampleSequence - g_question4PidStageStartSequence <
+            kQuestion4FirstPidSamples) {
+        return;
+    }
+    g_ballPid.setTunings(
+        kQuestion4SecondBalanceKp,
+        kQuestion4SecondBalanceKi,
+        kQuestion4SecondBalanceKd);
+    g_question4SecondPidActive = true;
+}
+
 void updateK230StepperDebug(std::uint32_t sampleSequence)
+{
+    updateQuestion4PidStage(sampleSequence);
+    updateMode3LineSpeedRamp(sampleSequence);
+    GraySensor::update(sampleSequence);
+    LineTracking::update(sampleSequence);
+    updateBallBalance(
+        sampleSequence, kMode3BallTargetX, kMode3BallDeadbandPixels);
+    PidDashboard::update(sampleSequence);
+}
+
+void updateK230FourSecondFixedTarget(std::uint32_t sampleSequence)
 {
     updateMode3LineSpeedRamp(sampleSequence);
     GraySensor::update(sampleSequence);
@@ -463,7 +521,7 @@ void updateK230CapturedTarget(std::uint32_t sampleSequence)
     GraySensor::update(sampleSequence);
     LineTracking::update(sampleSequence);
     updateBallBalance(
-        sampleSequence, g_mode4BallTargetX, kMode3BallDeadbandPixels);
+        sampleSequence, g_mode5BallTargetX, kMode3BallDeadbandPixels);
     PidDashboard::update(sampleSequence);
 }
 
@@ -500,7 +558,6 @@ void updateLineTracking(const Encoder::Sample &sample)
 
     const std::uint32_t distanceMillimeters =
         updateMode1Distance(sample);
-    PidDashboard::setLineTrackingDistanceMillimeters(distanceMillimeters);
 
     if (distanceMillimeters >= kMode1StopDistanceMillimeters) {
         // Clear both wheel-speed targets and latch active braking immediately.
@@ -526,10 +583,30 @@ void exitLineTracking()
     TB6612::coast();
 }
 
+void enterWheelPwmTest()
+{
+    Stepper::stop();
+    Stepper::setEnabled(false);
+    LineTracking::stop();
+
+    SpeedControl::pidEnabled = false;
+    SpeedControl::stop();
+    SpeedControl::setTargetRpm(
+        kWheelPwmTestTargetRpm, kWheelPwmTestTargetRpm);
+    SpeedControl::pidEnabled = true;
+    PidDashboard::setView(PidDashboard::View::SpeedControl);
+}
+
+void updateWheelPwmTest(std::uint32_t sampleSequence)
+{
+    PidDashboard::update(sampleSequence);
+}
+
 void exitCurrentMode()
 {
     switch (g_currentMode) {
         case AppMode::K230StepperDebug:
+        case AppMode::K230FourSecondFixedTarget:
         case AppMode::K230CapturedTarget:
             exitLineTracking();
             exitK230StepperControl();
@@ -538,6 +615,7 @@ void exitCurrentMode()
             exitK230StepperControl();
             break;
         case AppMode::LineTracking:
+        case AppMode::WheelPwmTest:
             exitLineTracking();
             break;
     }
@@ -547,14 +625,35 @@ void enterCurrentMode()
 {
     switch (g_currentMode) {
         case AppMode::K230StepperDebug:
+            enterK230FixedTarget(
+                kMode3LineRampSamples,
+                kQuestion4FirstBalanceKp,
+                kQuestion4FirstBalanceKi,
+                kQuestion4FirstBalanceKd);
+            resetQuestion4PidStage(g_lineRampStartSequence);
+            break;
+        case AppMode::K230FourSecondFixedTarget:
+            enterK230FixedTarget(
+                kMode4LineRampSamples,
+                kQuestion5BalanceKp,
+                kQuestion5BalanceKi,
+                kQuestion5BalanceKd);
+            break;
         case AppMode::K230CapturedTarget:
-            enterK230FixedTarget();
+            enterK230FixedTarget(
+                kMode5LineRampSamples,
+                kQuestion6BalanceKp,
+                kQuestion6BalanceKi,
+                kQuestion6BalanceKd);
             break;
         case AppMode::K230TwoStage:
             enterK230TwoStage();
             break;
         case AppMode::LineTracking:
             enterLineTracking();
+            break;
+        case AppMode::WheelPwmTest:
+            enterWheelPwmTest();
             break;
     }
 }
@@ -587,9 +686,10 @@ void init()
     g_latestBallPosition = {};
     g_hasBallFrame = false;
     g_lastBallFrameSampleSequence = 0U;
-    g_mode4BallTargetX = kMode3BallTargetX;
-    g_mode4CandidateTargetX = kMode3BallTargetX;
-    g_hasMode4CandidateTarget = false;
+    resetQuestion4PidStage(Encoder::latest().sequence);
+    g_mode5BallTargetX = kMode3BallTargetX;
+    g_mode5CandidateTargetX = kMode3BallTargetX;
+    g_hasMode5CandidateTarget = false;
     resetBallBalance();
     g_modeActive = false;
     g_startupState = StartupState::WaitingForK230;
@@ -622,13 +722,13 @@ void runOnce()
     if (g_startupState == StartupState::SelectingMode) {
         // Keep the UART buffer current while the operator chooses a mode.
         serviceK230Link(sample.sequence);
-        g_hasMode4CandidateTarget =
+        g_hasMode5CandidateTarget =
             ballFrameIsFresh(sample.sequence) &&
             g_latestBallPosition.detected;
-        if (g_hasMode4CandidateTarget) {
+        if (g_hasMode5CandidateTarget) {
             // This remains the most recent accepted detected frame preceding
             // the eventual USER-button confirmation.
-            g_mode4CandidateTargetX = g_latestBallPosition.x;
+            g_mode5CandidateTargetX = g_latestBallPosition.x;
         }
         if (takeButtonPress(g_b21Button)) {
             g_b21PressCount = g_b21PressCount < 99U
@@ -638,9 +738,9 @@ void runOnce()
         }
         if (takeButtonPress(g_userButton) && g_b21PressCount != 0U) {
             const std::uint8_t modeNumber = static_cast<std::uint8_t>(
-                ((g_b21PressCount - 1U) % 4U) + 1U);
-            if (modeNumber == 4U && !g_hasMode4CandidateTarget) {
-                // Mode 4 cannot define its fixed target until at least one
+                ((g_b21PressCount - 1U) % 6U) + 1U);
+            if (modeNumber == 5U && !g_hasMode5CandidateTarget) {
+                // Mode 5 cannot define its fixed target until at least one
                 // detected ball frame has arrived before confirmation.
                 PidDashboard::update(sample.sequence);
                 return;
@@ -651,9 +751,13 @@ void runOnce()
                 selectMode(AppMode::K230TwoStage);
             } else if (modeNumber == 3U) {
                 selectMode(AppMode::K230StepperDebug);
-            } else {
-                g_mode4BallTargetX = g_mode4CandidateTargetX;
+            } else if (modeNumber == 4U) {
+                selectMode(AppMode::K230FourSecondFixedTarget);
+            } else if (modeNumber == 5U) {
+                g_mode5BallTargetX = g_mode5CandidateTargetX;
                 selectMode(AppMode::K230CapturedTarget);
+            } else {
+                selectMode(AppMode::WheelPwmTest);
             }
             g_startupState = StartupState::Running;
         } else {
@@ -662,13 +766,17 @@ void runOnce()
         return;
     }
 
-    // Mode 1 deliberately does not read or parse K230 data.
-    if (g_currentMode != AppMode::LineTracking) {
+    // Line tracking and the wheel-PWM test do not use K230 position data.
+    if (g_currentMode != AppMode::LineTracking &&
+        g_currentMode != AppMode::WheelPwmTest) {
         serviceK230Link(sample.sequence);
     }
     switch (g_currentMode) {
         case AppMode::K230StepperDebug:
             updateK230StepperDebug(sample.sequence);
+            break;
+        case AppMode::K230FourSecondFixedTarget:
+            updateK230FourSecondFixedTarget(sample.sequence);
             break;
         case AppMode::K230CapturedTarget:
             updateK230CapturedTarget(sample.sequence);
@@ -678,6 +786,9 @@ void runOnce()
             break;
         case AppMode::LineTracking:
             updateLineTracking(sample);
+            break;
+        case AppMode::WheelPwmTest:
+            updateWheelPwmTest(sample.sequence);
             break;
     }
 }

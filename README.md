@@ -130,19 +130,26 @@ mode.
 
 Startup first keeps every motor stopped and displays the K230 monitor. The
 first valid `BALL,x` or `BALL,-1` frame confirms the link and opens the mode
-menu. The displayed PB21 press count selects modes cyclically: counts 1/5/9
-select mode 1, 2/6/10 select mode 2, 3/7/11 select mode 3, and 4/8/12 select
-mode 4. Press the external
-`user_button` to start. Mode 1 runs line tracking, stops consuming K230 data,
+menu. The displayed PB21 press count selects six modes cyclically: counts
+1/7/13 select mode 1, 2/8/14 select mode 2, 3/9/15 select mode 3,
+4/10/16 select mode 4, 5/11/17 select mode 5, and 6/12/18 select the TEST
+mode. Press the external
+`user_button` to start. Mode 1 (`QUESTION 2`) runs line tracking, stops consuming K230 data,
 keeps the stepper driver disabled, and shows only elapsed time and travelled
-distance on the OLED using the 12x24 font. Mode 2 initially targets K230 coordinate 500 but switches once to 227 as
-soon as the ball reaches or passes X=450. Mode 3 runs line tracking and the
-fixed-target K230/stepper controller at X=345 concurrently. Its line-tracking
-base target ramps linearly from 0 to 70 RPM over the first 4 seconds.
-Mode 4 uses the most recent accepted detected-ball X coordinate preceding the
-`user_button` confirmation as its fixed PID target. Confirmation remains in the
-selection screen if no detected-ball frame is available. All other balance PID,
-line-tracking, deadband, speed-ramp, and stepper settings match mode 3.
+distance on the OLED using the 12x24 font. Mode 2 (`QUESTION 3`) initially targets K230 coordinate 500 but switches once to 227 as
+soon as the ball reaches or passes X=450. Mode 3 (`QUESTION 4`) keeps the fixed
+PID target X=348 and linearly ramps its PID line-tracking base speed from 0 to
+70 RPM over 2 seconds.
+Mode 4 (`QUESTION 5`) retains the fixed X=348 target and uses a
+4-second speed ramp. Mode 5 (`QUESTION 6`) is the
+former mode 4: it captures the most recent accepted detected-ball X coordinate
+before `user_button` confirmation as its fixed PID target and uses the
+2.5-second ramp. Confirmation remains in the selection screen if mode 5 has no
+fresh detected-ball frame. Modes 3, 4 and 5 show the same large running-time
+display as mode 1 after startup.
+TEST disables the stepper and line-tracking outer loop, commands both wheel
+speed PID targets to 70 RPM, and displays right/left target RPM, measured RPM,
+and signed PWM output on the OLED.
 
 In mode 1, the wheel targets are set to zero immediately when the accumulated
 centre travel reaches 5.94 m. Both TB6612 channels enter active short-brake
@@ -235,12 +242,13 @@ previous echo never delays the next coordinate transmission.
 
 ## K230 Ball-position PID
 
-Modes 2, 3 and 4 enable the positional PID only after the first valid `BALL,x`
+Modes 2 through 5 enable the positional PID only after the first valid `BALL,x`
 frame arrives. Mode 2 starts with target `X=500`; the first detected coordinate
 at or beyond `X=450` switches the target permanently to `X=227` for the
-remainder of that run. Mode 3 keeps the fixed `X=345` target, while mode 4
-locks the most recent valid X coordinate before confirmation as its target.
-Both modes simultaneously execute line tracking. Each new valid frame updates an
+remainder of that run. Modes 3 and 4 keep the fixed `X=348` target, while
+mode 5 locks the most recent valid X coordinate before
+confirmation as its target. All three modes simultaneously execute line
+tracking. Each new valid frame updates an
 absolute stepper target within the +/-30-degree software limits.
 Before the first usable frame, the stepper driver remains disabled so the
 manually centered mechanism is not electrically locked. The first PID update
@@ -262,7 +270,7 @@ control law is `Kp * errorPixels + Ki * integral(errorPixels) - Kd *
 ballVelocity`. There is no static-friction compensation or stationary/moving
 state switch.
 
-| Parameter | Mode 2 | Modes 3/4 |
+| Parameter | Mode 2 | Modes 3/4/5 |
 | --- | ---: | ---: |
 | Kp | 0.80 | 0.70 |
 | Ki | 0.080 | 0.070 |
@@ -274,6 +282,14 @@ state switch.
 | STEP frequency | 1200 pulse/s | 1200 pulse/s |
 | Output limit | +/-30 degrees / +/-267 pulses | +/-30 degrees / +/-267 pulses |
 | Frame timeout | 0.30 seconds | 0.30 seconds |
+
+`QUESTION 4` and `QUESTION 5` share two balance PID sets in `car_app.cpp`.
+Both load `kQuestion4FirstBalanceKp/Ki/Kd` on entry and switch permanently to
+`kQuestion4SecondBalanceKp/Ki/Kd` for that run, independently of the ball's
+direction or velocity. Their independently adjustable first-stage durations are
+`kQuestion4FirstPidDurationSeconds` (currently 1.0 seconds) and
+`kQuestion5FirstPidDurationSeconds` (currently 3.0 seconds). `QUESTION 6`
+continues to use its own `kQuestion6BalanceKp/Ki/Kd` constants.
 
 `BALL,-1` or 0.30 seconds without a valid frame stops the STEP train and resets
 the PID state while the enabled driver holds its current commanded position.
@@ -330,19 +346,21 @@ magnitude reaches the 100 RPM limit at either outermost sensor. The controller
 settings are:
 
 - Mode 1 base speed: 100 RPM
-- Modes 3/4 base speed: linear 0-to-70 RPM startup ramp over 4 seconds, then 70 RPM
+- Mode 3 base speed: linear 0-to-70 RPM PID line-tracking ramp over 2 seconds, then 70 RPM
+- Mode 5 base speed: linear 0-to-70 RPM startup ramp over 2.5 seconds, then 70 RPM
+- Mode 4 base speed: linear 0-to-70 RPM startup ramp over 4 seconds, then 70 RPM
 - Differential correction limit: +/-100 RPM
 
-| Outer-loop PID | Mode 1 | Modes 3/4 |
+| Outer-loop PID | Mode 1 | Modes 3/4/5 |
 | --- | ---: | ---: |
 | Kp | 8.0 | 8.0 |
 | Ki | 0.0 | 0.0 |
 | Kd | 0.1 | 0.1 |
 
 Mode 1 uses `kDefaultKp`, `kDefaultKi` and `kDefaultKd` from
-`line_tracking.hpp`. Modes 3 and 4 load the independent `kMode3LineKp`,
+`line_tracking.hpp`. Modes 3, 4 and 5 load the independent `kMode3LineKp`,
 `kMode3LineKi` and `kMode3LineKd` constants from `car_app.cpp` after the line
-tracker is initialized, so tuning modes 3/4 does not alter mode 1.
+tracker is initialized, so tuning modes 3/4/5 does not alter mode 1.
 
 The target mix is `left_rpm = base_rpm - correction_rpm` and
 `right_rpm = base_rpm + correction_rpm`, clamped to 0 through twice the base
@@ -411,7 +429,7 @@ distance sensor. Ball balancing uses the K230 X coordinate as its feedback and
 the commanded pulse position as an open-loop mechanism estimate.
 The mechanism must be placed manually at its center before every power-up.
 
-After the K230 check and menu confirmation, modes 2, 3 and 4 define the
+After the K230 check and menu confirmation, modes 2 through 5 define the
 manually centered position as zero while leaving the driver disabled and the
 motor unlocked. A fresh detected-ball frame enables the driver and starts the
 K230 position PID. Re-entering the mode later does not redefine the original
